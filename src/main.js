@@ -4,18 +4,20 @@ import { ABILITIES, COLORS, GameEngine, GRAPHICS_PROFILES, PASSIVES } from './ga
 import './style.css';
 
 const app = document.querySelector('#app');
-const authBoot = authReady.catch((error) => {
-  console.error('Firebase Auth no disponible', error);
-  toastMessage('No se pudo conectar con Firebase.');
-  throw error;
-});
-const savedId = localStorage.getItem('knockbit-player-id') || crypto.randomUUID();
-localStorage.setItem('knockbit-player-id', savedId);
 const settings = {
   graphics: localStorage.getItem('knockbit-graphics') || 'optimized',
   sound: localStorage.getItem('knockbit-sound') !== 'off',
 };
-const state = { id: savedId, room: '', profile: { name: localStorage.getItem('knockbit-name') || '', color: localStorage.getItem('knockbit-color') || COLORS[0], passive: 'alcance', ability: 'dash' }, roomValue: null, unsubscribe: null, gameUnsubs: [], engine: null, started: false, resultShown: false };
+const state = { id: '', room: '', profile: { name: localStorage.getItem('knockbit-name') || '', color: localStorage.getItem('knockbit-color') || COLORS[0], passive: 'alcance', ability: 'dash' }, roomValue: null, unsubscribe: null, gameUnsubs: [], engine: null, started: false, resultShown: false };
+// La identidad en la base de datos es el UID de la Auth anónima: así las reglas
+// pueden aislar la escritura de cada jugador ($playerId === auth.uid).
+const authBoot = authReady
+  .then((credential) => { state.id = credential?.user?.uid || ''; })
+  .catch((error) => {
+    console.error('Firebase Auth no disponible', error);
+    toastMessage('No se pudo conectar con Firebase. ¿Estás en un dominio autorizado?');
+    throw error;
+  });
 
 app.innerHTML = `
   <main class="shell">
@@ -84,7 +86,7 @@ function renderMenu() {
 
 function code() { return Array.from(crypto.getRandomValues(new Uint8Array(5)), (value) => 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[value % 30]).join(''); }
 async function createRoom() {
-  await authBoot;
+  try { await authBoot; } catch { return; }
   const room = code();
   const player = profile();
   await set(ref(db, `rooms/${room}`), { host: state.id, createdAt: serverTimestamp(), state: { phase: 'lobby', map: 'circle', mode: 'territory', startedAt: null, winner: null }, players: { [state.id]: player }, strikes: null });
@@ -93,7 +95,7 @@ async function createRoom() {
   watchRoom();
 }
 async function joinRoom(input) {
-  await authBoot;
+  try { await authBoot; } catch { return; }
   const room = input.trim().toUpperCase();
   if (!room) return toastMessage('Escribe el código de la sala.');
   const player = profile();
