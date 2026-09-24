@@ -1,0 +1,17 @@
+{
+  "rules": {
+    "rooms": {
+      ".read": true,
+      ".write": true,
+      "$roomId": {
+        "events": {
+          ".indexOn": ["seq"]
+        }
+      }
+    },
+    "players": {
+      ".read": true,
+      ".write": true
+    }
+  }
+}
