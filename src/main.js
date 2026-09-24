@@ -151,7 +151,18 @@ function syncState(snapshot) {
   lastSync = now;
   const me = snapshot.find((player) => player.id === state.id);
   if (!me) return;
-  update(ref(db, `rooms/${state.room}/players/${state.id}`), { x: me.x, y: me.y, vx: me.vx, vy: me.vy, aim: me.aim, alive: me.alive, updatedAt: serverTimestamp() });
+  update(ref(db, `rooms/${state.room}/players/${state.id}`), {
+    x: me.x,
+    y: me.y,
+    vx: me.vx,
+    vy: me.vy,
+    aim: me.aim,
+    alive: me.alive,
+    swingUntil: me.swingUntil,
+    swingStarted: me.swingStarted,
+    shieldUntil: me.shieldUntil,
+    updatedAt: serverTimestamp(),
+  });
 }
 function stopGame() {
   state.gameUnsubs.splice(0).forEach((unsubscribe) => unsubscribe?.());

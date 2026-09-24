@@ -72,3 +72,9 @@ Este archivo lo mantiene el agente de desarrollo. Cada entrada debe añadirse ju
 - Decisiones tomadas: se considera completado el MVP con el alcance de Territorio y mapa círculo; Vidas y mapas adicionales quedan fuera del MVP según la sección 12.
 - Pendiente / siguiente paso: ninguno.
 
+## 2026-09-24 — Combate visual, expulsión y optimización
+- Qué se hizo: se corrigió la eliminación al salir del borde exterior para que un golpe pueda expulsar realmente a un jugador; el bate queda visible apuntando al ratón y conserva su arco de golpeo; se reforzaron los efectos de Dash y Backstab; se suavizó la interpolación de jugadores remotos, se sincronizó la animación del bate y se redujo el coste visual del canvas para equipos modestos.
+- Archivos afectados: src/game.js, src/main.js.
+- Decisiones tomadas: se mantiene un margen breve de 280 ms fuera del círculo para absorber latencia, pero no se recoloca al jugador ni se bloquea el knockback; los saltos remotos grandes se aplican de inmediato y el movimiento normal se interpola.
+- Pendiente / siguiente paso: ejecutar build, publicar la corrección y verificar la URL pública.
+
