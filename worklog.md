@@ -108,3 +108,9 @@ Este archivo lo mantiene el agente de desarrollo. Cada entrada debe añadirse ju
 - Decisiones tomadas: las vidas viajan en el nodo de cada jugador (`lives`, `hitsTaken`) para no tocar la arquitectura de reglas; el ranking usa `state/eliminationOrder/{n}` escrito por el cliente que detecta la eliminación (los duplicados son inofensivos y se reordenan por clave); el ping usa `.info/serverTimeOffset` + eco propio cada 5 s; se endureció además la regla de `players` para exigir `id === auth.uid` dentro del propio nodo (cerrado un vector multi-write detectado en las pruebas).
 - Pendiente / siguiente paso: build final, verificación y publicación.
 
+## 2026-09-24 — Publicación del lote de mejoras
+- Qué se hizo: build correcta; reglas endurecidas desplegadas y verificadas (multi-write ajeno bloqueado, syncState propio OK, sala ajena bloqueada, ping/eliminationOrder/vidas OK); build publicada en `gh-pages`; commit `733362c` en `main`; URL pública HTTP 200; salas de prueba borradas de RTDB.
+- Archivos afectados: rama `gh-pages`, `main`, worklog.md.
+- Decisiones tomadas: verificación de seguridad repetida tras el deploy para confirmar que la regla endurecida quedó activa en producción.
+- Pendiente / siguiente paso: ninguno.
+
