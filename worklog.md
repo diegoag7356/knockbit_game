@@ -54,3 +54,15 @@ Este archivo lo mantiene el agente de desarrollo. Cada entrada debe añadirse ju
 - Decisiones tomadas: el cliente víctima aplica el knockback recibido por evento RTDB; es una arquitectura ligera adecuada para el MVP sin servidor dedicado. Se mantuvo un único mapa círculo para respetar el alcance mínimo.
 - Pendiente / siguiente paso: publicar código y build en GitHub y GitHub Pages.
 
+## 2026-09-24 — Publicación del código
+- Qué se hizo: se inicializó Git, se creó el commit `5257fee` y se subió la rama `main` a `https://github.com/diegoag7356/knockbit_game`.
+- Archivos afectados: repositorio completo del MVP.
+- Decisiones tomadas: se usó la identidad local de GitHub `diegoag7356@users.noreply.github.com` únicamente para este commit.
+- Pendiente / siguiente paso: publicar la build estática en GitHub Pages.
+
+## 2026-09-24 — Despliegue en GitHub Pages
+- Qué se hizo: se publicó `dist/` en la rama `gh-pages`; GitHub confirmó que Pages ya estaba habilitado para el repositorio.
+- Archivos afectados: rama remota `gh-pages`.
+- Decisiones tomadas: se usa despliegue por rama `gh-pages` en lugar de un workflow, porque la build Vite ya es estática y no requiere servidor.
+- Pendiente / siguiente paso: verificar la URL pública y subir los últimos ajustes de robustez.
+

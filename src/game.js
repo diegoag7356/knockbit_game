@@ -270,7 +270,11 @@ export class GameEngine {
     for (const data of snapshot) {
       const player = this.players.get(data.id);
       if (!player || player.id === this.meId) continue;
-      Object.assign(player, data, { remote: true });
+      const networkState = {};
+      for (const key of ['x', 'y', 'vx', 'vy', 'aim', 'alive', 'swingUntil', 'shieldUntil', 'abilityUntil', 'color', 'name', 'passive', 'ability']) {
+        if (data[key] !== undefined && data[key] !== null) networkState[key] = data[key];
+      }
+      Object.assign(player, networkState, { remote: true });
     }
   }
 
