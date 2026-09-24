@@ -76,5 +76,11 @@ Este archivo lo mantiene el agente de desarrollo. Cada entrada debe añadirse ju
 - Qué se hizo: se corrigió la eliminación al salir del borde exterior para que un golpe pueda expulsar realmente a un jugador; el bate queda visible apuntando al ratón y conserva su arco de golpeo; se reforzaron los efectos de Dash y Backstab; se suavizó la interpolación de jugadores remotos, se sincronizó la animación del bate y se redujo el coste visual del canvas para equipos modestos.
 - Archivos afectados: src/game.js, src/main.js.
 - Decisiones tomadas: se mantiene un margen breve de 280 ms fuera del círculo para absorber latencia, pero no se recoloca al jugador ni se bloquea el knockback; los saltos remotos grandes se aplican de inmediato y el movimiento normal se interpola.
-- Pendiente / siguiente paso: ejecutar build, publicar la corrección y verificar la URL pública.
+- Pendiente / siguiente paso: completado con build, publicación y verificación pública.
+
+## 2026-09-24 — Publicación de correcciones de combate
+- Qué se hizo: el build de producción pasó; se creó el commit `0510f11`, se subió a `main` y se publicó la nueva build en `gh-pages`. La URL pública respondió HTTP 200.
+- Archivos afectados: src/game.js, src/main.js, worklog.md, rama remota `gh-pages`.
+- Decisiones tomadas: se mantiene Vite como build estática y el límite de DPR en 1.25 para priorizar fluidez en Macs con 8 GB de RAM sin eliminar sombras, partículas ni feedback de habilidades.
+- Pendiente / siguiente paso: ninguno.
 
