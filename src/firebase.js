@@ -1,4 +1,5 @@
 import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously } from 'firebase/auth';
 import { getDatabase } from 'firebase/database';
 
 const firebaseConfig = {
@@ -13,4 +14,8 @@ const firebaseConfig = {
 };
 
 const app = initializeApp(firebaseConfig);
+export const auth = getAuth(app);
 export const db = getDatabase(app);
+// Anonymous Auth permite proteger RTDB sin pedir registro y evita que una copia
+// alojada en un dominio no autorizado pueda iniciar sesión en este proyecto.
+export const authReady = signInAnonymously(auth);

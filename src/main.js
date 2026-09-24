@@ -1,11 +1,20 @@
 import { onValue, onChildAdded, ref, set, update, push, remove, onDisconnect, serverTimestamp } from 'firebase/database';
-import { db } from './firebase';
-import { ABILITIES, COLORS, GameEngine, PASSIVES } from './game';
+import { authReady, db } from './firebase';
+import { ABILITIES, COLORS, GameEngine, GRAPHICS_PROFILES, PASSIVES } from './game';
 import './style.css';
 
 const app = document.querySelector('#app');
+const authBoot = authReady.catch((error) => {
+  console.error('Firebase Auth no disponible', error);
+  toastMessage('No se pudo conectar con Firebase.');
+  throw error;
+});
 const savedId = localStorage.getItem('knockbit-player-id') || crypto.randomUUID();
 localStorage.setItem('knockbit-player-id', savedId);
+const settings = {
+  graphics: localStorage.getItem('knockbit-graphics') || 'optimized',
+  sound: localStorage.getItem('knockbit-sound') !== 'off',
+};
 const state = { id: savedId, room: '', profile: { name: localStorage.getItem('knockbit-name') || '', color: localStorage.getItem('knockbit-color') || COLORS[0], passive: 'alcance', ability: 'dash' }, roomValue: null, unsubscribe: null, gameUnsubs: [], engine: null, started: false, resultShown: false };
 
 app.innerHTML = `
@@ -38,7 +47,8 @@ function profile() {
 
 function renderMenu() {
   menu.innerHTML = `<div class="card hero-card">
-    <div class="brand"><span class="brand-mark">K</span><span>KNOCK<span>BIT</span></span></div>
+    <div class="menu-heading"><div class="brand"><span class="brand-mark">K</span><span>KNOCK<span>BIT</span></span></div><button id="settings-toggle" class="ghost settings-toggle" aria-expanded="false">⚙ Ajustes</button></div>
+    <div id="settings-panel" class="settings-panel hidden"><div class="settings-title"><strong>Ajustes</strong><span>Se guardan en este dispositivo</span></div><label class="field-label" for="graphics">Gráficos</label><select id="graphics" class="text-input">${Object.entries(GRAPHICS_PROFILES).map(([key, item]) => `<option value="${key}" ${settings.graphics === key ? 'selected' : ''}>${item.label}</option>`).join('')}</select><p class="settings-help">Optimizado reduce el coste en Macs con poca memoria; Alto usa más resolución y partículas.</p><label class="sound-setting"><input id="sound" type="checkbox" ${settings.sound ? 'checked' : ''}> Sonido de combate</label></div>
     <p class="eyebrow">Arena 2D · 2–8 jugadores</p>
     <h1>Golpea. Empuja.<br><em>No salgas de la zona.</em></h1>
     <label class="field-label" for="name">Tu nombre</label>
@@ -52,6 +62,21 @@ function renderMenu() {
     state.profile.color = button.dataset.color;
     menu.querySelectorAll('.color-dot').forEach((dot) => dot.classList.toggle('selected', dot === button));
   }));
+  menu.querySelector('#settings-toggle').addEventListener('click', () => {
+    const panel = menu.querySelector('#settings-panel');
+    const open = panel.classList.toggle('hidden') === false;
+    menu.querySelector('#settings-toggle').setAttribute('aria-expanded', String(open));
+  });
+  menu.querySelector('#graphics').addEventListener('change', (event) => {
+    settings.graphics = event.target.value;
+    localStorage.setItem('knockbit-graphics', settings.graphics);
+    toastMessage(`Gráficos: ${GRAPHICS_PROFILES[settings.graphics].label}`);
+  });
+  menu.querySelector('#sound').addEventListener('change', (event) => {
+    settings.sound = event.target.checked;
+    localStorage.setItem('knockbit-sound', settings.sound ? 'on' : 'off');
+    toastMessage(settings.sound ? 'Sonido activado.' : 'Sonido desactivado.');
+  });
   menu.querySelector('#create').addEventListener('click', createRoom);
   menu.querySelector('#join').addEventListener('click', () => joinRoom(menu.querySelector('#room-code').value));
   menu.querySelector('#room-code').addEventListener('keydown', (event) => { if (event.key === 'Enter') joinRoom(event.target.value); });
@@ -59,6 +84,7 @@ function renderMenu() {
 
 function code() { return Array.from(crypto.getRandomValues(new Uint8Array(5)), (value) => 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[value % 30]).join(''); }
 async function createRoom() {
+  await authBoot;
   const room = code();
   const player = profile();
   await set(ref(db, `rooms/${room}`), { host: state.id, createdAt: serverTimestamp(), state: { phase: 'lobby', map: 'circle', mode: 'territory', startedAt: null, winner: null }, players: { [state.id]: player }, strikes: null });
@@ -67,6 +93,7 @@ async function createRoom() {
   watchRoom();
 }
 async function joinRoom(input) {
+  await authBoot;
   const room = input.trim().toUpperCase();
   if (!room) return toastMessage('Escribe el código de la sala.');
   const player = profile();
@@ -131,7 +158,7 @@ function startGame() {
   menu.classList.add('hidden'); lobby.classList.add('hidden'); game.classList.remove('hidden');
   const room = state.roomValue;
   const players = Object.entries(room.players || {}).map(([id, player]) => ({ ...player, id }));
-  state.engine = new GameEngine(canvas, { players, meId: state.id, map: room.state?.map, onStrike: (strike) => push(ref(db, `rooms/${state.room}/strikes`), { ...strike, createdAt: serverTimestamp() }), onEliminate: (id) => update(ref(db, `rooms/${state.room}/players/${id}`), { alive: false }), onWin: (winner) => { if (room.host === state.id) update(ref(db, `rooms/${state.room}/state`), { phase: 'ended', winner }); }, onState: syncState });
+  state.engine = new GameEngine(canvas, { players, meId: state.id, map: room.state?.map, graphics: settings.graphics, sound: settings.sound, onStrike: (strike) => push(ref(db, `rooms/${state.room}/strikes`), { ...strike, createdAt: serverTimestamp() }), onEliminate: (id) => update(ref(db, `rooms/${state.room}/players/${id}`), { alive: false }), onWin: (winner) => { if (room.host === state.id) update(ref(db, `rooms/${state.room}/state`), { phase: 'ended', winner }); }, onState: syncState });
   state.engine.startedAt = room.state?.startedAt || Date.now();
   state.engine.start();
   state.gameUnsubs.push(onValue(ref(db, `rooms/${state.room}/players`), (snapshot) => {

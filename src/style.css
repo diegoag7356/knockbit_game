@@ -7,7 +7,15 @@ button { cursor: pointer; border: 0; color: var(--text); }
 .hidden { display:none !important; }
 .card { width:min(920px, 100%); background:rgba(27,29,38,.94); border:1px solid var(--line); border-radius:24px; box-shadow:0 24px 80px rgba(0,0,0,.35); }
 .hero-card { width:min(560px,100%); padding:42px; }
+.menu-heading { display:flex; align-items:center; justify-content:space-between; gap:16px; }
 .brand { display:flex; align-items:center; gap:11px; color:#fff; font-size:22px; font-weight:900; letter-spacing:.14em; }
+.settings-toggle { padding:8px 11px; font-size:12px; }
+.settings-panel { margin:22px 0 8px; padding:16px; border:1px solid var(--line); border-radius:14px; background:rgba(12,13,18,.55); }
+.settings-title { display:flex; align-items:baseline; justify-content:space-between; gap:12px; }
+.settings-title strong { font-size:15px; } .settings-title span, .settings-help { color:var(--muted); font-size:11px; }
+.settings-help { margin:7px 0 12px; line-height:1.4; }
+.sound-setting { display:flex; align-items:center; gap:9px; color:var(--text); font-size:13px; font-weight:700; cursor:pointer; }
+.sound-setting input { accent-color:var(--accent); width:16px; height:16px; }
 .brand span:last-child span { color:var(--accent); }
 .brand-mark { display:grid; place-items:center; width:34px; height:34px; border-radius:10px; background:var(--accent); color:#fff; font-size:22px; letter-spacing:0; }
 .eyebrow { color:var(--accent-2); font-size:12px; font-weight:800; letter-spacing:.14em; text-transform:uppercase; }
@@ -40,4 +48,4 @@ h3 { font-size:17px; margin-bottom:14px; } h3 span { color:var(--muted); font-si
 .game-screen { position:relative; display:block; padding:0; background:#111218; } #arena { width:100vw; height:100vh; }
 .result { position:fixed; z-index:4; left:50%; top:50%; transform:translate(-50%,-50%); width:min(430px,calc(100% - 40px)); padding:36px; text-align:center; } .result h2 { margin:16px 0 9px; } .result p:not(.eyebrow) { color:var(--muted); margin-bottom:24px; }
 .toast { position:fixed; z-index:10; left:50%; bottom:25px; transform:translate(-50%,20px); opacity:0; pointer-events:none; padding:12px 18px; background:#303342; border:1px solid #4a5064; border-radius:10px; color:#fff; transition:.2s; } .toast.visible { opacity:1; transform:translate(-50%,0); }
-@media (max-width:700px) { .hero-card, .lobby-card { padding:25px; } .lobby-grid { grid-template-columns:1fr; gap:12px; } .choice-grid { grid-template-columns:1fr; } .host-controls { align-items:stretch; flex-direction:column; } h1 { font-size:44px; } }
+@media (max-width:700px) { .hero-card, .lobby-card { padding:25px; } .menu-heading { align-items:flex-start; } .brand { font-size:18px; } .settings-toggle { font-size:11px; padding:7px 9px; } .lobby-grid { grid-template-columns:1fr; gap:12px; } .choice-grid { grid-template-columns:1fr; } .host-controls { align-items:stretch; flex-direction:column; } h1 { font-size:44px; } }

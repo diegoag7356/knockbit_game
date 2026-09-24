@@ -1,17 +1,21 @@
 {
   "rules": {
     "rooms": {
-      ".read": true,
-      ".write": true,
       "$roomId": {
-        "events": {
-          ".indexOn": ["seq"]
+        ".read": "auth != null",
+        ".write": "auth != null && ((!data.exists() || data.child('players').hasChild(auth.uid)) && (!newData.exists() || newData.child('players').hasChild(auth.uid) || data.child('players').hasChild(auth.uid)))",
+        "state": {
+          ".write": "auth != null && (!data.exists() || data.parent().child('players').hasChild(auth.uid))"
+        },
+        "players": {
+          "$playerId": {
+            ".write": "auth != null && $playerId === auth.uid"
+          }
+        },
+        "strikes": {
+          ".write": "auth != null"
         }
       }
-    },
-    "players": {
-      ".read": true,
-      ".write": true
     }
   }
 }

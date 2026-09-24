@@ -84,3 +84,9 @@ Este archivo lo mantiene el agente de desarrollo. Cada entrada debe añadirse ju
 - Decisiones tomadas: se mantiene Vite como build estática y el límite de DPR en 1.25 para priorizar fluidez en Macs con 8 GB de RAM sin eliminar sombras, partículas ni feedback de habilidades.
 - Pendiente / siguiente paso: ninguno.
 
+## 2026-09-24 — Ajustes de gráficos, sonido y Firebase protegido
+- Qué se hizo: se añadió un menú de Ajustes en el menú principal con perfiles de gráficos (Optimizado, Normal, Alto: resolución, límite de FPS y densidad de partículas) y un interruptor de sonido; se implementaron sonidos procedurales (WebAudio) para el swing del bate, el Dash, el teleport de Backstab, el Caparazón y el impacto, tanto propios como recibidos en red; se activó Anonymous Auth como requisito para usar la base de datos, se dejó el dominio autorizado solo en `diegoag7356.github.io` (más `localhost` y los dominios del propio proyecto) y se endurecieron las reglas de RTDB: solo usuarios autenticados, cada jugador solo escribe su propio nodo, golpes solo autenticados y estado de partida por cualquiera autenticado.
+- Archivos afectados: src/game.js, src/main.js, src/style.css, src/firebase.js, database.rules.json, worklog.md.
+- Decisiones tomadas: el sonido se genera con WebAudio (sin ficheros de audio) para no aumentar el peso de la build; el perfil «Optimizado» conserva el ajuste previo (DPR 1.25, 55 FPS, 72 partículas); las preferencias se guardan en `localStorage`; no se puede bloquear por reglas el acceso por dominio (las reglas de RTDB no ven el origen), así que la protección anti-copia es Auth anónima + dominios autorizados de Identity Toolkit, que sí la impiden de facto; se permite que cualquier jugador autenticado escriba `state` para que la vuelta a lobby tras la partida siga funcionando igual.
+- Pendiente / siguiente paso: build, verificación local y publicación.
+

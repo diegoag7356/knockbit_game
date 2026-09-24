@@ -22,6 +22,11 @@ const BAT_DURATION = 210;
 const BAT_RANGE = 78;
 const BAT_SWING_ANGLE = Math.PI * 0.82;
 const MAX_PARTICLES = 72;
+export const GRAPHICS_PROFILES = {
+  optimized: { label: 'Optimizado', dpr: 1.25, renderMs: 1000 / 55, maxParticles: 72 },
+  normal: { label: 'Normal', dpr: 1.5, renderMs: 1000 / 60, maxParticles: 110 },
+  high: { label: 'Alto', dpr: 2, renderMs: 1000 / 60, maxParticles: 160 },
+};
 const KNOCKBACK = 620;
 const ARENA_EXIT_RADIUS = MAP_SIZE + PLAYER_RADIUS * 0.45;
 const ZONE_START = 30;
@@ -34,6 +39,34 @@ const normalize = (x, y) => {
   return { x: x / length, y: y / length };
 };
 const angleDifference = (a, b) => Math.atan2(Math.sin(a - b), Math.cos(a - b));
+
+function playSound(kind, enabled) {
+  if (!enabled || typeof window === 'undefined') return;
+  const AudioContext = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContext) return;
+  const context = window.__knockbitAudio || (window.__knockbitAudio = new AudioContext());
+  if (context.state === 'suspended') context.resume();
+  const now = context.currentTime;
+  const settings = {
+    swing: { start: 180, end: 85, duration: 0.12, volume: 0.045, type: 'sawtooth' },
+    dash: { start: 120, end: 420, duration: 0.18, volume: 0.06, type: 'triangle' },
+    teleport: { start: 520, end: 150, duration: 0.34, volume: 0.055, type: 'sine' },
+    hit: { start: 300, end: 90, duration: 0.15, volume: 0.07, type: 'square' },
+    shell: { start: 220, end: 440, duration: 0.25, volume: 0.05, type: 'sine' },
+  }[kind];
+  if (!settings) return;
+  const oscillator = context.createOscillator();
+  const gain = context.createGain();
+  oscillator.type = settings.type;
+  oscillator.frequency.setValueAtTime(settings.start, now);
+  oscillator.frequency.exponentialRampToValueAtTime(settings.end, now + settings.duration);
+  gain.gain.setValueAtTime(0.0001, now);
+  gain.gain.exponentialRampToValueAtTime(settings.volume, now + 0.012);
+  gain.gain.exponentialRampToValueAtTime(0.0001, now + settings.duration);
+  oscillator.connect(gain).connect(context.destination);
+  oscillator.start(now);
+  oscillator.stop(now + settings.duration + 0.02);
+}
 
 export function makePlayer(data, index = 0, total = 1) {
   const angle = (index / Math.max(total, 1)) * Math.PI * 2 - Math.PI / 2;
@@ -72,9 +105,11 @@ export function insideZone(player, zone) {
 }
 
 export class GameEngine {
-  constructor(canvas, { players, meId, map = 'circle', onStrike, onEliminate, onWin, onState }) {
+  constructor(canvas, { players, meId, map = 'circle', onStrike, onEliminate, onWin, onState, graphics = 'optimized', sound = true }) {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
+    this.graphics = GRAPHICS_PROFILES[graphics] || GRAPHICS_PROFILES.optimized;
+    this.sound = sound;
     this.meId = meId;
     this.map = map;
     this.players = new Map(players.map((player, index) => [player.id, makePlayer(player, index, players.length)]));
@@ -124,8 +159,8 @@ export class GameEngine {
   }
 
   resize() {
-    // 1.25x evita que una pantalla Retina multiplique innecesariamente el coste del canvas.
-    const dpr = Math.min(window.devicePixelRatio || 1, 1.25);
+    // El perfil elegido limita el coste de una pantalla Retina sin cambiar el tamaño lógico del juego.
+    const dpr = Math.min(window.devicePixelRatio || 1, this.graphics.dpr);
     this.canvas.width = Math.max(1, Math.floor(this.canvas.clientWidth * dpr));
     this.canvas.height = Math.max(1, Math.floor(this.canvas.clientHeight * dpr));
     this.dpr = dpr;
@@ -150,11 +185,13 @@ export class GameEngine {
       const direction = this.movementDirection(player);
       player.vx += direction.x * 720;
       player.vy += direction.y * 720;
+      playSound('dash', this.sound);
       this.addBurst(player.x, player.y, direction.x, direction.y, '#63e6be', 18);
       this.effects.push({ type: 'dash', x: player.x, y: player.y, dx: direction.x, dy: direction.y, until: now + 320 });
       player.abilityUntil = now + ability.cooldown * rhythm;
     } else if (player.ability === 'shell') {
       player.shieldUntil = now + 2500;
+      playSound('shell', this.sound);
       player.abilityUntil = now + ability.cooldown * rhythm;
     } else if (player.ability === 'backstab') {
       const enemy = [...this.players.values()].filter((candidate) => candidate.id !== this.meId && candidate.alive).sort((a, b) => distance(player, a) - distance(player, b))[0];
@@ -167,6 +204,7 @@ export class GameEngine {
       player.x = destination.x;
       player.y = destination.y;
       player.aim = Math.atan2(enemy.y - player.y, enemy.x - player.x);
+      playSound('teleport', this.sound);
       this.addBurst(origin.x, origin.y, direction.x, direction.y, '#b68cff', 12);
       this.addBurst(player.x, player.y, -direction.x, -direction.y, '#ff7bd5', 24);
       this.effects.push({ type: 'teleport', x: player.x, y: player.y, fromX: origin.x, fromY: origin.y, until: now + 520 });
@@ -193,6 +231,7 @@ export class GameEngine {
     if (now < player.swingUntil) return;
     player.swingStarted = now;
     player.swingUntil = now + BAT_DURATION;
+    playSound('swing', this.sound);
     player.swingHit = false;
     player.aim = Math.atan2(this.mouseWorld.y - player.y, this.mouseWorld.x - player.x);
   }
@@ -203,12 +242,13 @@ export class GameEngine {
     const power = KNOCKBACK * (PASSIVES[attacker.passive]?.impact || 1) * (attacker.shieldUntil > now ? 0.4 : 1);
     target.vx += dir.x * power;
     target.vy += dir.y * power;
+    playSound('hit', this.sound);
     this.addBurst(target.x, target.y, dir.x, dir.y, '#f7c948', 10);
     this.onStrike?.({ attacker: attacker.id, victim: target.id, dx: dir.x, dy: dir.y, power, automatic });
   }
 
   addBurst(x, y, dx, dy, color, count = 8) {
-    const amount = Math.min(count, MAX_PARTICLES - this.effects.length);
+    const amount = Math.min(count, this.graphics.maxParticles - this.effects.length);
     for (let index = 0; index < amount; index += 1) {
       const spread = (Math.random() - 0.5) * 1.5;
       const speed = 60 + Math.random() * 180;
@@ -304,6 +344,7 @@ export class GameEngine {
     if (!target || !target.alive || target.shieldUntil > performance.now()) return;
     target.vx += Number(strike.dx || 0) * Number(strike.power || 0);
     target.vy += Number(strike.dy || 0) * Number(strike.power || 0);
+    playSound('hit', this.sound);
   }
 
   applyRemote(snapshot) {
@@ -345,7 +386,7 @@ export class GameEngine {
       this.lastFrame = now;
       this.update(dt, Date.now());
       // Mantiene la simulación a 60 Hz, pero limita el coste de pintura en Macs modestos.
-      if (now - this.lastRender >= 1000 / 55) {
+      if (now - this.lastRender >= this.graphics.renderMs) {
         this.render();
         this.lastRender = now;
       }
