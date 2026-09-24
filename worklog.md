@@ -64,5 +64,11 @@ Este archivo lo mantiene el agente de desarrollo. Cada entrada debe añadirse ju
 - Qué se hizo: se publicó `dist/` en la rama `gh-pages`; GitHub confirmó que Pages ya estaba habilitado para el repositorio.
 - Archivos afectados: rama remota `gh-pages`.
 - Decisiones tomadas: se usa despliegue por rama `gh-pages` en lugar de un workflow, porque la build Vite ya es estática y no requiere servidor.
-- Pendiente / siguiente paso: verificar la URL pública y subir los últimos ajustes de robustez.
+- Pendiente / siguiente paso: ninguno; MVP publicado y verificado.
+
+## 2026-09-24 — Verificación final
+- Qué se hizo: se verificó `https://diegoag7356.github.io/knockbit_game/` con respuesta HTTP 200 y título correcto; también se verificó que el build final compila sin errores.
+- Archivos afectados: worklog.md.
+- Decisiones tomadas: se considera completado el MVP con el alcance de Territorio y mapa círculo; Vidas y mapas adicionales quedan fuera del MVP según la sección 12.
+- Pendiente / siguiente paso: ninguno.
 
