@@ -90,3 +90,9 @@ Este archivo lo mantiene el agente de desarrollo. Cada entrada debe añadirse ju
 - Decisiones tomadas: el sonido se genera con WebAudio (sin ficheros de audio) para no aumentar el peso de la build; el perfil «Optimizado» conserva el ajuste previo (DPR 1.25, 55 FPS, 72 partículas); las preferencias se guardan en `localStorage`; no se puede bloquear por reglas el acceso por dominio (las reglas de RTDB no ven el origen), así que la protección anti-copia es Auth anónima + dominios autorizados de Identity Toolkit, que sí la impiden de facto; se permite que cualquier jugador autenticado escriba `state` para que la vuelta a lobby tras la partida siga funcionando igual.
 - Pendiente / siguiente paso: build, verificación local y publicación.
 
+## 2026-09-24 — Publicación de ajustes, sonido y seguridad
+- Qué se hizo: build de producción correcta; se publicó la nueva build en `gh-pages`; se creó el commit `b5c9cf4` y se subió a `main`; la URL pública responde HTTP 200. Se verificaron por consola las reglas en vivo: lectura/escritura solo autenticada, nodo de jugador ajeno bloqueado, sala ajena bloqueada, golpes y estado OK.
+- Archivos afectados: rama remota `gh-pages`, repositorio remoto `main`, worklog.md.
+- Decisiones tomadas: los ajustes viven solo en el dispositivo del jugador (sin sincronizar), suficiente para el alcance actual.
+- Pendiente / siguiente paso: ninguno.
+
