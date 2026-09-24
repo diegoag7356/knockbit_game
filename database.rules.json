@@ -9,7 +9,7 @@
         },
         "players": {
           "$playerId": {
-            ".write": "auth != null && $playerId === auth.uid"
+            ".write": "auth != null && $playerId === auth.uid && (!newData.exists() || newData.child('id').val() === auth.uid)"
           }
         },
         "strikes": {

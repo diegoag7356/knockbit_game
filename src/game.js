@@ -13,6 +13,10 @@ export const ABILITIES = {
   backstab: { label: 'Backstab', description: 'Teletransporte + golpe', cooldown: 30000 },
   shell: { label: 'Caparazón', description: 'Inmune durante 2,5 s', cooldown: 15000 },
 };
+export const GAME_MODES = {
+  territory: { label: 'Territorio', description: 'Sobrevive a la zona. Último en pie gana.' },
+  lives: { label: 'Vidas', description: '3 vidas. 3 impactos restan una vida; salir del área resta una entera.' },
+};
 
 const MAP_SIZE = 420;
 const BASE_SPEED = 260;
@@ -31,6 +35,10 @@ const KNOCKBACK = 620;
 const ARENA_EXIT_RADIUS = MAP_SIZE + PLAYER_RADIUS * 0.45;
 const ZONE_START = 30;
 const ZONE_DURATION = 75;
+const START_LIVES = 3;
+const LIVES_HITS_PER_LIFE = 3;
+const SUDDEN_DEATH_SHRINK = 26;
+const SUDDEN_DEATH_MIN_RADIUS = 24;
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
@@ -53,6 +61,10 @@ function playSound(kind, enabled) {
     teleport: { start: 520, end: 150, duration: 0.34, volume: 0.055, type: 'sine' },
     hit: { start: 300, end: 90, duration: 0.15, volume: 0.07, type: 'square' },
     shell: { start: 220, end: 440, duration: 0.25, volume: 0.05, type: 'sine' },
+    zone: { start: 65, end: 130, duration: 0.55, volume: 0.05, type: 'sawtooth' },
+    tick: { start: 520, end: 490, duration: 0.08, volume: 0.04, type: 'sine' },
+    lose: { start: 330, end: 110, duration: 0.7, volume: 0.07, type: 'triangle' },
+    win: { start: 260, end: 660, duration: 0.75, volume: 0.07, type: 'triangle' },
   }[kind];
   if (!settings) return;
   const oscillator = context.createOscillator();
@@ -82,6 +94,9 @@ export function makePlayer(data, index = 0, total = 1) {
     vy: 0,
     aim: -Math.PI / 2,
     alive: true,
+    lives: data.lives !== undefined ? data.lives : START_LIVES,
+    hitsTaken: data.hitsTaken || 0,
+    respawnUntil: 0,
     swingUntil: 0,
     swingStarted: 0,
     swingHit: false,
@@ -95,9 +110,16 @@ export function makePlayer(data, index = 0, total = 1) {
 
 export function getZone(elapsed) {
   const full = MAP_SIZE;
-  const progress = clamp((elapsed - ZONE_START) / ZONE_DURATION, 0, 1);
-  const size = elapsed < ZONE_START ? full : full - (full - 75) * progress;
-  return { x: CENTER, y: CENTER, size };
+  if (elapsed < ZONE_START) return { x: CENTER, y: CENTER, size: full, suddenDeath: false };
+  const shrinkProgress = clamp((elapsed - ZONE_START) / ZONE_DURATION, 0, 1);
+  if (shrinkProgress < 1) {
+    const size = full - (full - 75) * shrinkProgress;
+    return { x: CENTER, y: CENTER, size, suddenDeath: false };
+  }
+  // Muerte súbita: la zona sigue encogiendo lentamente hasta forzar el desenlace.
+  const extra = Math.min((elapsed - ZONE_START - ZONE_DURATION) * SUDDEN_DEATH_SHRINK, full - SUDDEN_DEATH_MIN_RADIUS - 75);
+  const size = Math.max(SUDDEN_DEATH_MIN_RADIUS, 75 - extra);
+  return { x: CENTER, y: CENTER, size, suddenDeath: true };
 }
 
 export function insideZone(player, zone) {
@@ -105,18 +127,20 @@ export function insideZone(player, zone) {
 }
 
 export class GameEngine {
-  constructor(canvas, { players, meId, map = 'circle', onStrike, onEliminate, onWin, onState, graphics = 'optimized', sound = true }) {
+  constructor(canvas, { players, meId, map = 'circle', mode = 'territory', onStrike, onEliminate, onWin, onState, onLoseLife, graphics = 'optimized', sound = true }) {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
     this.graphics = GRAPHICS_PROFILES[graphics] || GRAPHICS_PROFILES.optimized;
     this.sound = sound;
     this.meId = meId;
     this.map = map;
+    this.mode = mode;
     this.players = new Map(players.map((player, index) => [player.id, makePlayer(player, index, players.length)]));
     this.onStrike = onStrike;
     this.onEliminate = onEliminate;
     this.onWin = onWin;
     this.onState = onState;
+    this.onLoseLife = onLoseLife;
     this.running = false;
     this.lastFrame = 0;
     this.lastRender = 0;
@@ -129,16 +153,21 @@ export class GameEngine {
     this.keys = new Set();
     this.mouse = { x: 0, y: 0 };
     this.mouseWorld = { x: CENTER, y: CENTER };
+    this.zoneAnnounced = false;
+    this.lastZoneTick = 0;
+    this.wonAnnounced = false;
+    this.deadAnnounced = false;
     this.bindInput();
     this.resize();
     window.addEventListener('resize', () => this.resize());
   }
 
   get me() { return this.players.get(this.meId); }
+  get isLivesMode() { return this.mode === 'lives'; }
 
   bindInput() {
     this.keyDown = (event) => {
-      if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ShiftLeft', 'ShiftRight'].includes(event.code)) {
+      if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ShiftLeft', 'ShiftRight', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.code)) {
         event.preventDefault();
         this.keys.add(event.code);
         if (event.code === 'Space' || event.code === 'ShiftLeft' || event.code === 'ShiftRight') this.activateAbility();
@@ -216,10 +245,10 @@ export class GameEngine {
   movementDirection(player) {
     let x = 0;
     let y = 0;
-    if (this.keys.has('KeyW')) y -= 1;
-    if (this.keys.has('KeyS')) y += 1;
-    if (this.keys.has('KeyA')) x -= 1;
-    if (this.keys.has('KeyD')) x += 1;
+    if (this.keys.has('KeyW') || this.keys.has('ArrowUp')) y -= 1;
+    if (this.keys.has('KeyS') || this.keys.has('ArrowDown')) y += 1;
+    if (this.keys.has('KeyA') || this.keys.has('ArrowLeft')) x -= 1;
+    if (this.keys.has('KeyD') || this.keys.has('ArrowRight')) x += 1;
     if (!x && !y) return { x: Math.cos(player.aim), y: Math.sin(player.aim) };
     return normalize(x, y);
   }
@@ -244,7 +273,39 @@ export class GameEngine {
     target.vy += dir.y * power;
     playSound('hit', this.sound);
     this.addBurst(target.x, target.y, dir.x, dir.y, '#f7c948', 10);
+    // En modo Vidas el golpe acumula daño; a los N impactos se pierde una vida.
+    if (this.isLivesMode && target.id === this.meId) {
+      target.hitsTaken = (target.hitsTaken || 0) + 1;
+      if (target.hitsTaken >= LIVES_HITS_PER_LIFE) {
+        target.hitsTaken = 0;
+        this.loseLife(target, 'impact');
+      }
+    }
     this.onStrike?.({ attacker: attacker.id, victim: target.id, dx: dir.x, dy: dir.y, power, automatic });
+  }
+
+  loseLife(player, cause) {
+    if (!player.alive) return;
+    player.lives = Math.max(0, (player.lives ?? START_LIVES) - 1);
+    this.addBurst(player.x, player.y, 0, -1, '#ff5c67', 22);
+    if (player.id === this.meId) {
+      playSound('lose', this.sound);
+      this.onLoseLife?.(player.lives, cause);
+    }
+    if (player.lives <= 0) {
+      player.alive = false;
+      this.onEliminate?.(player.id);
+    } else if (cause === 'exit') {
+      // Reaparece cerca del centro tras perder una vida por expulsión.
+      const angle = Math.random() * Math.PI * 2;
+      player.x = CENTER + Math.cos(angle) * 120;
+      player.y = CENTER + Math.sin(angle) * 120;
+      player.vx = 0;
+      player.vy = 0;
+      player.outsideSince = 0;
+      player.respawnUntil = performance.now() + 900;
+      this.effects.push({ type: 'respawn', x: player.x, y: player.y, until: performance.now() + 900 });
+    }
   }
 
   addBurst(x, y, dx, dy, color, count = 8) {
@@ -268,13 +329,83 @@ export class GameEngine {
     }
   }
 
+  // Separa pares de cajas solapadas repartiendo el empuje entre ambos (el Caparazón no es empujado).
+  resolveCollisions() {
+    const players = [...this.players.values()].filter((player) => player.alive && performance.now() > player.respawnUntil);
+    for (let i = 0; i < players.length; i += 1) {
+      for (let j = i + 1; j < players.length; j += 1) {
+        const a = players[i];
+        const b = players[j];
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const dist = Math.hypot(dx, dy) || 0.001;
+        const overlap = PLAYER_RADIUS * 1.7 - dist;
+        if (overlap <= 0) continue;
+        const nx = dx / dist;
+        const ny = dy / dist;
+        const aShielded = a.shieldUntil > performance.now();
+        const bShielded = b.shieldUntil > performance.now();
+        const aMove = bShielded ? 0 : (aShielded ? 1 : 0.5);
+        const bMove = aShielded ? 0 : (bShielded ? 1 : 0.5);
+        a.x -= nx * overlap * aMove;
+        a.y -= ny * overlap * aMove;
+        b.x += nx * overlap * bMove;
+        b.y += ny * overlap * bMove;
+        const push = 60;
+        if (!aShielded) { a.vx -= nx * push * bMove; a.vy -= ny * push * bMove; }
+        if (!bShielded) { b.vx += nx * push * aMove; b.vy += ny * push * aMove; }
+      }
+    }
+  }
+
   update(dt, now) {
     this.elapsed = (Date.now() - this.startedAt) / 1000;
     const me = this.me;
-    if (!me || !me.alive) return;
+    const zone = getZone(this.elapsed);
+
+    // Avisos de zona: anuncio al empezar a encoger y tics mientras encoge.
+    if (this.elapsed >= ZONE_START) {
+      if (!this.zoneAnnounced) {
+        this.zoneAnnounced = true;
+        playSound('zone', this.sound);
+      }
+      if (me?.alive && !insideZone(me, zone) && now - this.lastZoneTick > 2000) {
+        this.lastZoneTick = now;
+        playSound('tick', this.sound);
+      }
+    }
+
+    // Espectador: aunque yo esté muerto, el mundo sigue vivo (remotos, efectos, zona).
+    if (!me || !me.alive) {
+      for (const player of this.players.values()) {
+        if (player.id === this.meId) continue;
+        player.x += player.vx * dt;
+        player.y += player.vy * dt;
+        player.vx *= 0.97;
+        player.vy *= 0.97;
+        if (player.targetX !== undefined) {
+          const blend = 1 - Math.exp(-16 * dt);
+          player.x += (player.targetX - player.x) * blend;
+          player.y += (player.targetY - player.y) * blend;
+        }
+      }
+      this.updateEffects(performance.now(), dt);
+      const alive = [...this.players.values()].filter((player) => player.alive);
+      if (alive.length === 1 && this.players.size > 1) {
+        if (!this.wonAnnounced) {
+          this.wonAnnounced = true;
+          if (alive[0].id === this.meId) playSound('win', this.sound);
+        }
+        this.onWin?.(alive[0].id);
+      }
+      this.onState?.(this.snapshot());
+      return;
+    }
+    if (!this.deadAnnounced && me.alive) this.deadAnnounced = false;
+
     const direction = this.movementDirection(me);
-    const moving = this.keys.has('KeyW') || this.keys.has('KeyA') || this.keys.has('KeyS') || this.keys.has('KeyD');
-    if (moving) {
+    const moving = this.keys.has('KeyW') || this.keys.has('KeyA') || this.keys.has('KeyS') || this.keys.has('KeyD') || this.keys.has('ArrowUp') || this.keys.has('ArrowDown') || this.keys.has('ArrowLeft') || this.keys.has('ArrowRight');
+    if (moving && performance.now() > me.respawnUntil) {
       me.vx += direction.x * BASE_SPEED * 7 * dt;
       me.vy += direction.y * BASE_SPEED * 7 * dt;
     }
@@ -300,6 +431,8 @@ export class GameEngine {
       player.lastSeen = now;
     }
 
+    this.resolveCollisions();
+
     const nowPerformance = performance.now();
     this.updateEffects(nowPerformance, dt);
     if (nowPerformance >= me.swingStarted + BAT_DURATION * 0.38 && !me.swingHit && nowPerformance < me.swingUntil + 30) {
@@ -318,16 +451,21 @@ export class GameEngine {
     if (arenaDistance > ARENA_EXIT_RADIUS) {
       if (!me.outsideSince) me.outsideSince = now;
       if (now - me.outsideSince > this.arenaExitGrace) {
-        me.alive = false;
-        this.onEliminate?.(me.id);
+        if (this.isLivesMode) this.loseLife(me, 'exit');
+        else {
+          me.alive = false;
+          this.onEliminate?.(me.id);
+        }
       }
     } else {
-      const zone = getZone(this.elapsed);
       if (!insideZone(me, zone)) {
         if (!me.outsideSince) me.outsideSince = now;
         if (now - me.outsideSince > 1000) {
-          me.alive = false;
-          this.onEliminate?.(me.id);
+          if (this.isLivesMode) this.loseLife(me, 'exit');
+          else {
+            me.alive = false;
+            this.onEliminate?.(me.id);
+          }
         }
       } else {
         me.outsideSince = 0;
@@ -335,7 +473,13 @@ export class GameEngine {
     }
 
     const alive = [...this.players.values()].filter((player) => player.alive);
-    if (alive.length === 1 && this.players.size > 1) this.onWin?.(alive[0].id);
+    if (alive.length === 1 && this.players.size > 1) {
+      if (!this.wonAnnounced) {
+        this.wonAnnounced = true;
+        if (alive[0].id === this.meId) playSound('win', this.sound);
+      }
+      this.onWin?.(alive[0].id);
+    }
     this.onState?.(this.snapshot());
   }
 
@@ -345,6 +489,13 @@ export class GameEngine {
     target.vx += Number(strike.dx || 0) * Number(strike.power || 0);
     target.vy += Number(strike.dy || 0) * Number(strike.power || 0);
     playSound('hit', this.sound);
+    if (this.isLivesMode) {
+      target.hitsTaken = (target.hitsTaken || 0) + 1;
+      if (target.hitsTaken >= LIVES_HITS_PER_LIFE) {
+        target.hitsTaken = 0;
+        this.loseLife(target, 'impact');
+      }
+    }
   }
 
   applyRemote(snapshot) {
@@ -352,11 +503,11 @@ export class GameEngine {
       const player = this.players.get(data.id);
       if (!player || player.id === this.meId) continue;
       const networkState = {};
-      for (const key of ['x', 'y', 'vx', 'vy', 'aim', 'alive', 'swingUntil', 'shieldUntil', 'abilityUntil', 'color', 'name', 'passive', 'ability']) {
+      for (const key of ['x', 'y', 'vx', 'vy', 'aim', 'alive', 'lives', 'hitsTaken', 'swingUntil', 'shieldUntil', 'abilityUntil', 'color', 'name', 'passive', 'ability']) {
         if (data[key] !== undefined && data[key] !== null) networkState[key] = data[key];
       }
       if (data.x !== undefined && data.y !== undefined) {
-        const jump = Math.hypot(data.x - player.x, data.y - player.y);
+        const jump = Math.hypot(data.x - player.x, player.y !== undefined ? data.y - player.y : 0);
         // Teletransporte/respawn se aplica de inmediato; el movimiento normal se interpola.
         if (jump > 180) {
           player.x = data.x;
@@ -374,7 +525,7 @@ export class GameEngine {
   }
 
   snapshot() {
-    return [...this.players.values()].map(({ id, x, y, vx, vy, aim, alive, swingUntil, swingStarted, shieldUntil, abilityUntil, color, name, passive, ability }) => ({ id, x, y, vx, vy, aim, alive, swingUntil, swingStarted, shieldUntil, abilityUntil, color, name, passive, ability }));
+    return [...this.players.values()].map(({ id, x, y, vx, vy, aim, alive, lives, hitsTaken, swingUntil, swingStarted, shieldUntil, abilityUntil, color, name, passive, ability }) => ({ id, x, y, vx, vy, aim, alive, lives, hitsTaken, swingUntil, swingStarted, shieldUntil, abilityUntil, color, name, passive, ability }));
   }
 
   start() {
@@ -432,11 +583,22 @@ export class GameEngine {
     ctx.fillStyle = '#293b46';
     ctx.fillRect(0, 0, WORLD, WORLD);
     ctx.restore();
-    ctx.strokeStyle = this.elapsed >= ZONE_START ? '#ffdb6e' : '#6ce5ff';
+    ctx.strokeStyle = zone.suddenDeath ? '#ff5c67' : (this.elapsed >= ZONE_START ? '#ffdb6e' : '#6ce5ff');
     ctx.lineWidth = 5;
     ctx.beginPath();
     ctx.arc(CENTER, CENTER, zone.size, 0, Math.PI * 2);
     ctx.stroke();
+    // Anillo pulsante de aviso mientras la zona se encoge.
+    if (this.elapsed >= ZONE_START && this.elapsed < ZONE_START + ZONE_DURATION) {
+      const pulse = 0.5 + 0.5 * Math.sin(this.elapsed * Math.PI * 2.4);
+      ctx.globalAlpha = 0.16 + pulse * 0.24;
+      ctx.strokeStyle = '#ffdb6e';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(CENTER, CENTER, zone.size + 8 + pulse * 10, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
     ctx.strokeStyle = '#576070';
     ctx.lineWidth = 4;
     ctx.beginPath();
@@ -447,6 +609,14 @@ export class GameEngine {
     for (const player of this.players.values()) this.drawPlayer(ctx, player);
     ctx.restore();
     this.drawHud(ctx, width, height);
+    // Viñeta roja si estoy fuera de la zona (aviso barato: gradiente radial precalculado por frame mínimo).
+    if (this.me?.alive && !insideZone(this.me, zone)) {
+      const gradient = ctx.createRadialGradient(width / 2, height / 2, Math.min(width, height) * 0.32, width / 2, height / 2, Math.max(width, height) * 0.72);
+      gradient.addColorStop(0, 'rgba(255,60,80,0)');
+      gradient.addColorStop(1, 'rgba(255,60,80,.34)');
+      ctx.fillStyle = gradient;
+      ctx.fillRect(0, 0, width, height);
+    }
   }
 
   drawEffects(ctx) {
@@ -478,6 +648,13 @@ export class GameEngine {
         ctx.beginPath();
         ctx.arc(effect.x, effect.y, 28 + (1 - life) * 24, 0, Math.PI * 2);
         ctx.stroke();
+      } else if (effect.type === 'respawn') {
+        ctx.globalAlpha = life * 0.8;
+        ctx.strokeStyle = '#7df2b1';
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.arc(effect.x, effect.y, 20 + (1 - life) * 34, 0, Math.PI * 2);
+        ctx.stroke();
       }
       ctx.globalAlpha = 1;
     }
@@ -488,6 +665,11 @@ export class GameEngine {
     const now = performance.now();
     ctx.save();
     ctx.translate(player.x, player.y);
+    // Parpadeo breve al reaparecer tras perder una vida.
+    if (player.respawnUntil > now && Math.floor(now / 90) % 2 === 0) {
+      ctx.restore();
+      return;
+    }
     // Sombra simple y barata para separar personajes del suelo.
     ctx.fillStyle = 'rgba(0,0,0,.24)';
     ctx.beginPath();
@@ -532,6 +714,18 @@ export class GameEngine {
       ctx.stroke();
       ctx.globalAlpha = 1;
     }
+    // Aro de alcance propio: muestra tu rango real de bate (crece con la pasiva Alcance).
+    if (player.id === this.meId) {
+      ctx.globalAlpha = 0.14;
+      ctx.strokeStyle = '#9da6ba';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([9, 11]);
+      ctx.beginPath();
+      ctx.arc(0, 0, batLength + PLAYER_RADIUS, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 1;
+    }
     ctx.fillStyle = player.color;
     ctx.strokeStyle = player.id === this.meId ? '#ffffff' : 'rgba(0,0,0,.5)';
     ctx.lineWidth = player.id === this.meId ? 3 : 2;
@@ -557,12 +751,23 @@ export class GameEngine {
     ctx.font = 'bold 14px system-ui';
     ctx.textAlign = 'center';
     ctx.fillText(player.name, 0, -29);
+    // En modo Vidas, vidas visibles sobre cada jugador.
+    if (this.isLivesMode) {
+      const lives = player.lives ?? START_LIVES;
+      ctx.font = '11px system-ui';
+      ctx.fillText('❤'.repeat(lives) || '💀', 0, -44);
+    }
     ctx.restore();
   }
 
   drawHud(ctx, width, height) {
     const me = this.me;
-    const zoneText = this.elapsed < ZONE_START ? `La zona se encoge en ${Math.ceil(ZONE_START - this.elapsed)}s` : `Zona activa · ${Math.ceil(Math.max(0, ZONE_DURATION - (this.elapsed - ZONE_START)))}s`;
+    const zone = getZone(this.elapsed);
+    const zoneText = zone.suddenDeath
+      ? 'MUERTE SÚBITA'
+      : this.elapsed < ZONE_START
+        ? `La zona se encoge en ${Math.ceil(ZONE_START - this.elapsed)}s`
+        : `Zona activa · ${Math.ceil(Math.max(0, ZONE_DURATION - (this.elapsed - ZONE_START)))}s`;
     ctx.fillStyle = 'rgba(12,13,18,.82)';
     ctx.fillRect(18, 18, Math.min(width - 36, 360), 72);
     ctx.fillStyle = '#f2f4fa';
@@ -570,13 +775,35 @@ export class GameEngine {
     ctx.textAlign = 'left';
     ctx.fillText(`Tiempo ${Math.floor(this.elapsed)}s`, 32, 47);
     ctx.font = '14px system-ui';
-    ctx.fillStyle = '#b9c1d3';
+    ctx.fillStyle = zone.suddenDeath ? '#ff5c67' : '#b9c1d3';
     ctx.fillText(zoneText, 32, 70);
     if (me) {
       const remaining = Math.max(0, me.abilityUntil - performance.now());
       const abilityText = remaining ? `${ABILITIES[me.ability].label}: ${(remaining / 1000).toFixed(1)}s` : `${ABILITIES[me.ability].label}: LISTA (Espacio)`;
       ctx.fillStyle = remaining ? '#b9c1d3' : '#7df2b1';
       ctx.fillText(abilityText, 32, 91);
+      // Vidas propias en el HUD (modo Vidas).
+      if (this.isLivesMode) {
+        const lives = me.lives ?? START_LIVES;
+        ctx.font = '18px system-ui';
+        ctx.fillStyle = lives > 1 ? '#ff5c67' : '#ffe66d';
+        ctx.fillText(`❤ ${lives}${me.hitsTaken ? `  (+${me.hitsTaken})` : ''}`, 200, 47);
+      }
+    }
+    if (me && !me.alive) {
+      ctx.fillStyle = 'rgba(12,13,18,.72)';
+      ctx.fillRect(width / 2 - 150, height - 88, 300, 44);
+      ctx.fillStyle = '#ff9f9f';
+      ctx.font = '700 16px system-ui';
+      ctx.textAlign = 'center';
+      ctx.fillText('ELIMINADO · viendo la partida', width / 2, height - 60);
+    }
+    // Ping en la esquina superior derecha.
+    if (this.pingMs !== null && this.pingMs !== undefined) {
+      ctx.font = '12px system-ui';
+      ctx.textAlign = 'right';
+      ctx.fillStyle = this.pingMs < 90 ? '#7df2b1' : this.pingMs < 200 ? '#ffe66d' : '#ff5c67';
+      ctx.fillText(`${Math.round(this.pingMs)} ms`, width - 24, 34);
     }
   }
 }

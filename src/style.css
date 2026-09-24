@@ -47,5 +47,8 @@ h3 { font-size:17px; margin-bottom:14px; } h3 span { color:var(--muted); font-si
 .host-controls { display:flex; align-items:end; gap:12px; padding:20px 0; border-top:1px solid var(--line); } .host-controls label { flex:1; margin:0; } .host-controls select { margin-top:7px; }
 .game-screen { position:relative; display:block; padding:0; background:#111218; } #arena { width:100vw; height:100vh; }
 .result { position:fixed; z-index:4; left:50%; top:50%; transform:translate(-50%,-50%); width:min(430px,calc(100% - 40px)); padding:36px; text-align:center; } .result h2 { margin:16px 0 9px; } .result p:not(.eyebrow) { color:var(--muted); margin-bottom:24px; }
+.result-ranking { display:grid; gap:7px; margin:6px 0 22px; }
+.result-row { display:flex; align-items:center; gap:10px; padding:8px 12px; background:var(--panel-2); border-radius:9px; text-align:left; }
+.result-row span:first-child { color:var(--muted); width:26px; font-weight:800; } .result-row .color-dot { width:15px; height:15px; border-width:0; } .result-row strong { flex:1; }
 .toast { position:fixed; z-index:10; left:50%; bottom:25px; transform:translate(-50%,20px); opacity:0; pointer-events:none; padding:12px 18px; background:#303342; border:1px solid #4a5064; border-radius:10px; color:#fff; transition:.2s; } .toast.visible { opacity:1; transform:translate(-50%,0); }
 @media (max-width:700px) { .hero-card, .lobby-card { padding:25px; } .menu-heading { align-items:flex-start; } .brand { font-size:18px; } .settings-toggle { font-size:11px; padding:7px 9px; } .lobby-grid { grid-template-columns:1fr; gap:12px; } .choice-grid { grid-template-columns:1fr; } .host-controls { align-items:stretch; flex-direction:column; } h1 { font-size:44px; } }
