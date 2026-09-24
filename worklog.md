@@ -96,3 +96,9 @@ Este archivo lo mantiene el agente de desarrollo. Cada entrada debe añadirse ju
 - Decisiones tomadas: los ajustes viven solo en el dispositivo del jugador (sin sincronizar), suficiente para el alcance actual.
 - Pendiente / siguiente paso: ninguno.
 
+## 2026-09-24 — Corrección: crear sala fallaba con permission_denied
+- Qué se hizo: el error ocurría porque las salas se escribían con el ID antiguo de `localStorage` como clave de jugador, y las reglas nuevas exigen que la clave coincida con `auth.uid`. Ahora la app adopta el UID de la Auth anónima como identidad en cuanto la sesión está lista, y los flujos de crear/unirse esperan a esa sesión antes de tocar la base de datos. Se simuló el flujo real de creación contra Firebase (create + onDisconnect + update + read) y pasó completo.
+- Archivos afectados: src/main.js.
+- Decisiones tomadas: si la Auth anónima falla (p. ej. dominio no autorizado), se muestra un aviso claro y no se permite crear/unirse a salas.
+- Pendiente / siguiente paso: publicación de la corrección (commit `cc39336` en `main` y build nueva en `gh-pages`).
+
