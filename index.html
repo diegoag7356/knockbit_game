@@ -4,16 +4,37 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Knockbit — arena 2D multijugador</title>
-    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='6' y='6' width='20' height='20' rx='4' fill='%237c5cff'/%3E%3Ccircle cx='13' cy='16' r='2.6' fill='%23fff'/%3E%3Ccircle cx='19' cy='16' r='2.6' fill='%23fff'/%3E%3C/svg%3E" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='4' y='4' width='24' height='24' rx='6' fill='%23f25c54' stroke='%2317151f' stroke-width='3'/%3E%3Ccircle cx='12.5' cy='15' r='2.2' fill='%2317151f'/%3E%3Ccircle cx='19.5' cy='15' r='2.2' fill='%2317151f'/%3E%3C/svg%3E" />
     <style>
+      /* Cargador de arranque: pinta ANTES de que llegue el JS (sin flash blanco). */
       :root { color-scheme: dark; }
       * { margin: 0; padding: 0; box-sizing: border-box; }
-      html, body { height: 100%; background: #17171c; color: #e8e8ef; font-family: 'Segoe UI', system-ui, sans-serif; overflow: hidden; }
+      html, body { height: 100%; }
+      body { background: #17151f; overflow: hidden; }
+      #boot {
+        position: fixed; inset: 0; z-index: 100; background: #050508;
+        display: grid; place-items: center; transition: opacity .35s ease;
+      }
+      #boot.done { opacity: 0; pointer-events: none; }
+      .boot-inner { width: min(360px, 80vw); text-align: center; }
+      .boot-logo { font: 800 30px/1 'Trebuchet MS', sans-serif; letter-spacing: .12em; color: #efe7d6; }
+      .boot-logo b { color: #f25c54; }
+      .boot-bar { margin-top: 16px; height: 14px; border: 3px solid #efe7d6; border-radius: 999px; padding: 2px; overflow: hidden; }
+      .boot-bar i { display: block; height: 100%; width: 38%; background: #e8a020; border-radius: 999px; animation: boot-slide 1s ease-in-out infinite; }
+      @keyframes boot-slide { from { margin-left: -40%; } to { margin-left: 104%; } }
+      .boot-sub { margin-top: 10px; color: rgba(239,231,214,.45); font: 700 11px/1 'Trebuchet MS', sans-serif; letter-spacing: .18em; text-transform: uppercase; }
       #app { height: 100%; }
       canvas { display: block; margin: 0 auto; }
     </style>
   </head>
   <body>
+    <div id="boot" aria-hidden="true">
+      <div class="boot-inner">
+        <div class="boot-logo">KNOCK<b>BIT</b></div>
+        <div class="boot-bar"><i></i></div>
+        <div class="boot-sub">Preparando la mesa…</div>
+      </div>
+    </div>
     <div id="app"></div>
     <script type="module" src="/src/main.js"></script>
   </body>

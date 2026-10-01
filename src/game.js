@@ -6,7 +6,7 @@ export const COLORS = ['#ff5c67', '#ff9f43', '#ffe66d', '#55d889', '#4dd7d0', '#
 export const PASSIVES = {
   alcance: { label: 'Alcance', description: 'Bate 35% más largo', range: 1.35, impact: 1, rhythm: 1 },
   impacto: { label: 'Impacto', description: 'Empuje 60% más fuerte', range: 1, impact: 1.6, rhythm: 1 },
-  ritmo: { label: 'Ritmo', description: 'Cooldown de habilidad -20%', range: 1, impact: 1, rhythm: 0.8 },
+  ritmo: { label: 'Ritmo', description: 'Habilidad recarga 20% antes', range: 1, impact: 1, rhythm: 0.8 },
 };
 export const ABILITIES = {
   dash: { label: 'Dash', description: 'Impulso rápido', cooldown: 5000 },
@@ -18,13 +18,23 @@ export const GAME_MODES = {
   lives: { label: 'Vidas', description: '3 vidas. 3 impactos restan una vida; salir del área resta una entera.' },
 };
 
-const MAP_SIZE = 420;
+// Arena base: crece un poco con el número de cubys (solo lo necesario).
+const BASE_MAP_SIZE = 400;
+const MAP_SIZE_PER_PLAYER = 12;
+const MAX_MAP_SIZE = 480;
 const BASE_SPEED = 260;
 const DAMPING = 7;
-const BAT_COOLDOWN = 600;
-const BAT_DURATION = 210;
+// El bate no se puede spamear: cooldown PROPIO, independiente de la habilidad
+// y de la pasiva Ritmo (que solo reduce habilidades accionables).
+const BAT_COOLDOWN = 650;
+// Un bateo "de verdad": el swing tarda algo más en completarse.
+const BAT_DURATION = 320;
 const BAT_RANGE = 78;
-const BAT_SWING_ANGLE = Math.PI * 0.82;
+// Área de bateo: 120° centrados donde miras (60° por lado).
+const BAT_HALF_ANGLE = Math.PI / 3;
+const BAT_SWING_ANGLE = (Math.PI * 2) / 3;
+// Backstab: solo con el enemigo realmente cerca (~el alcance del bate con Alcance).
+const BACKSTAB_MAX_DISTANCE = BAT_RANGE * 1.35;
 const MAX_PARTICLES = 72;
 export const GRAPHICS_PROFILES = {
   optimized: { label: 'Optimizado', dpr: 1.25, renderMs: 1000 / 55, maxParticles: 72 },
@@ -32,13 +42,17 @@ export const GRAPHICS_PROFILES = {
   high: { label: 'Alto', dpr: 2, renderMs: 1000 / 60, maxParticles: 160 },
 };
 const KNOCKBACK = 620;
-const ARENA_EXIT_RADIUS = MAP_SIZE + PLAYER_RADIUS * 0.45;
+// Salida de arena precisa: basta con que tu centro cruce el borde (con un
+// susurro de margen para absorbir latencia, mucho menor que antes).
 const ZONE_START = 30;
 const ZONE_DURATION = 75;
 const START_LIVES = 3;
 const LIVES_HITS_PER_LIFE = 3;
 const SUDDEN_DEATH_SHRINK = 26;
 const SUDDEN_DEATH_MIN_RADIUS = 24;
+const SPAWN_RING_RADIUS = 130;
+const SPAWN_DURATION = 800;
+const RESPAWN_BLINK = 900;
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
@@ -48,6 +62,10 @@ const normalize = (x, y) => {
 };
 const angleDifference = (a, b) => Math.atan2(Math.sin(a - b), Math.cos(a - b));
 
+export function arenaSizeFor(playerCount) {
+  return Math.min(MAX_MAP_SIZE, BASE_MAP_SIZE + Math.max(0, playerCount - 2) * MAP_SIZE_PER_PLAYER);
+}
+
 function playSound(kind, enabled) {
   if (!enabled || typeof window === 'undefined') return;
   const AudioContext = window.AudioContext || window.webkitAudioContext;
@@ -56,7 +74,7 @@ function playSound(kind, enabled) {
   if (context.state === 'suspended') context.resume();
   const now = context.currentTime;
   const settings = {
-    swing: { start: 180, end: 85, duration: 0.12, volume: 0.045, type: 'sawtooth' },
+    swing: { start: 180, end: 85, duration: 0.14, volume: 0.045, type: 'sawtooth' },
     dash: { start: 120, end: 420, duration: 0.18, volume: 0.06, type: 'triangle' },
     teleport: { start: 520, end: 150, duration: 0.34, volume: 0.055, type: 'sine' },
     hit: { start: 300, end: 90, duration: 0.15, volume: 0.07, type: 'square' },
@@ -65,6 +83,11 @@ function playSound(kind, enabled) {
     tick: { start: 520, end: 490, duration: 0.08, volume: 0.04, type: 'sine' },
     lose: { start: 330, end: 110, duration: 0.7, volume: 0.07, type: 'triangle' },
     win: { start: 260, end: 660, duration: 0.75, volume: 0.07, type: 'triangle' },
+    spawn: { start: 200, end: 500, duration: 0.4, volume: 0.05, type: 'sine' },
+    confirm: { start: 440, end: 660, duration: 0.16, volume: 0.05, type: 'triangle' },
+    turn: { start: 330, end: 470, duration: 0.22, volume: 0.045, type: 'sine' },
+    count: { start: 600, end: 600, duration: 0.09, volume: 0.05, type: 'square' },
+    go: { start: 520, end: 900, duration: 0.35, volume: 0.07, type: 'square' },
   }[kind];
   if (!settings) return;
   const oscillator = context.createOscillator();
@@ -80,16 +103,17 @@ function playSound(kind, enabled) {
   oscillator.stop(now + settings.duration + 0.02);
 }
 
-export function makePlayer(data, index = 0, total = 1) {
+export function makePlayer(data, index = 0, total = 1, arenaSize = BASE_MAP_SIZE) {
   const angle = (index / Math.max(total, 1)) * Math.PI * 2 - Math.PI / 2;
+  const spawnDistance = arenaSize * 0.62;
   return {
     id: data.id,
     name: data.name || 'Jugador',
     color: data.color || COLORS[index % COLORS.length],
     passive: data.passive || 'alcance',
     ability: data.ability || 'dash',
-    x: CENTER + Math.cos(angle) * 260,
-    y: CENTER + Math.sin(angle) * 260,
+    x: CENTER + Math.cos(angle) * spawnDistance,
+    y: CENTER + Math.sin(angle) * spawnDistance,
     vx: 0,
     vy: 0,
     aim: -Math.PI / 2,
@@ -99,6 +123,7 @@ export function makePlayer(data, index = 0, total = 1) {
     respawnUntil: 0,
     swingUntil: 0,
     swingStarted: 0,
+    swingReadyAt: 0,
     swingHit: false,
     shieldUntil: 0,
     abilityUntil: 0,
@@ -108,15 +133,14 @@ export function makePlayer(data, index = 0, total = 1) {
   };
 }
 
-export function getZone(elapsed) {
-  const full = MAP_SIZE;
+export function getZone(elapsed, mapSize = BASE_MAP_SIZE) {
+  const full = mapSize;
   if (elapsed < ZONE_START) return { x: CENTER, y: CENTER, size: full, suddenDeath: false };
   const shrinkProgress = clamp((elapsed - ZONE_START) / ZONE_DURATION, 0, 1);
   if (shrinkProgress < 1) {
     const size = full - (full - 75) * shrinkProgress;
     return { x: CENTER, y: CENTER, size, suddenDeath: false };
   }
-  // Muerte súbita: la zona sigue encogiendo lentamente hasta forzar el desenlace.
   const extra = Math.min((elapsed - ZONE_START - ZONE_DURATION) * SUDDEN_DEATH_SHRINK, full - SUDDEN_DEATH_MIN_RADIUS - 75);
   const size = Math.max(SUDDEN_DEATH_MIN_RADIUS, 75 - extra);
   return { x: CENTER, y: CENTER, size, suddenDeath: true };
@@ -135,7 +159,11 @@ export class GameEngine {
     this.meId = meId;
     this.map = map;
     this.mode = mode;
-    this.players = new Map(players.map((player, index) => [player.id, makePlayer(player, index, players.length)]));
+    // La arena inicial depende de cuántos cubys juegan.
+    this.arenaSize = arenaSizeFor(players.length);
+    this.initialPlayerCount = players.length;
+    this.players = new Map(players.map((player, index) => [player.id, makePlayer(player, index, players.length, this.arenaSize)]));
+    this.initialSpawnPositions = new Map([...this.players.values()].map((player) => [player.id, { x: player.x, y: player.y }]));
     this.onStrike = onStrike;
     this.onEliminate = onEliminate;
     this.onWin = onWin;
@@ -144,22 +172,27 @@ export class GameEngine {
     this.running = false;
     this.lastFrame = 0;
     this.lastRender = 0;
-    this.frameCount = 0;
-    this.lastSync = 0;
     this.effects = [];
-    this.arenaExitGrace = 280;
+    // Fase: 'loadout' (overlay) → 'spawning' → 'countdown' → 'play'
+    this.phase = 'loadout';
+    this.spawned = new Set();
     this.elapsed = 0;
     this.startedAt = Date.now();
+    this.clockNow = Date.now;
+    this.playStartedAt = 0;
     this.keys = new Set();
     this.mouse = { x: 0, y: 0 };
     this.mouseWorld = { x: CENTER, y: CENTER };
     this.zoneAnnounced = false;
     this.lastZoneTick = 0;
     this.wonAnnounced = false;
-    this.deadAnnounced = false;
+    this.tabHidden = false;
     this.bindInput();
+    this.bindVisibility();
+    this.visibilityChange();
     this.resize();
-    window.addEventListener('resize', () => this.resize());
+    this.resizeHandler = () => this.resize();
+    window.addEventListener('resize', this.resizeHandler);
   }
 
   get me() { return this.players.get(this.meId); }
@@ -167,8 +200,10 @@ export class GameEngine {
 
   bindInput() {
     this.keyDown = (event) => {
+      if (event.code === 'Escape') return; // lo gestiona el menú de pausa (main.js)
       if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ShiftLeft', 'ShiftRight', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.code)) {
         event.preventDefault();
+        if (this.phase !== 'play' || this.tabHidden) return;
         this.keys.add(event.code);
         if (event.code === 'Space' || event.code === 'ShiftLeft' || event.code === 'ShiftRight') this.activateAbility();
       }
@@ -187,8 +222,62 @@ export class GameEngine {
     this.canvas.addEventListener('mousedown', this.click);
   }
 
+  // Pestaña oculta: nadie te golpea mientras tanto, pero el reloj de zona sigue
+  // corriendo: si sales de la arena estando fuera, pierdes igual.
+  bindVisibility() {
+    this.visibilityChange = () => {
+      const wasHidden = this.tabHidden;
+      this.tabHidden = document.hidden;
+      this.keys.clear();
+      if (this.tabHidden) {
+        this.hiddenAt = Date.now();
+        this.hiddenSinceEpoch = this.hiddenAt + (this.serverOffset || 0);
+      } else if (wasHidden) this.checkBoundsAfterBackground(this.clockNow());
+    };
+    document.addEventListener('visibilitychange', this.visibilityChange);
+  }
+
+  zoneExitTime(distanceFromCenter) {
+    const threshold = distanceFromCenter + PLAYER_RADIUS * 0.2;
+    if (threshold >= this.arenaSize) return this.startedAt;
+    if (threshold > 75) {
+      return this.startedAt + (ZONE_START + ((this.arenaSize - threshold) / (this.arenaSize - 75)) * ZONE_DURATION) * 1000;
+    }
+    if (threshold > SUDDEN_DEATH_MIN_RADIUS) {
+      return this.startedAt + (ZONE_START + ZONE_DURATION + (75 - threshold) / SUDDEN_DEATH_SHRINK) * 1000;
+    }
+    return Infinity;
+  }
+
+  checkBoundsAfterBackground(now) {
+    const player = this.me;
+    if (!player?.alive || this.phase !== 'play') return;
+    // requestAnimationFrame se ralentiza en pestañas ocultas; calcula la zona
+    // con el reloj real antes de decidir si el jugador sigue dentro.
+    this.elapsed = Math.max(this.elapsed, (now - this.startedAt) / 1000);
+    const distanceFromCenter = Math.hypot(player.x - CENTER, player.y - CENTER);
+    const zone = getZone(this.elapsed, this.arenaSize);
+    const outsideArena = distanceFromCenter > this.arenaSize;
+    const outsideZone = this.elapsed >= ZONE_START && !insideZone(player, zone);
+    if (outsideArena) {
+      if (this.isLivesMode) this.loseLife(player, 'exit');
+      else {
+        player.alive = false;
+        this.onEliminate?.(player.id);
+      }
+    } else if (outsideZone) {
+      player.outsideSince ||= Math.min(this.zoneExitTime(distanceFromCenter), now);
+      if (now - player.outsideSince >= 1000) {
+        if (this.isLivesMode) this.loseLife(player, 'exit');
+        else {
+          player.alive = false;
+          this.onEliminate?.(player.id);
+        }
+      }
+    } else player.outsideSince = 0;
+  }
+
   resize() {
-    // El perfil elegido limita el coste de una pantalla Retina sin cambiar el tamaño lógico del juego.
     const dpr = Math.min(window.devicePixelRatio || 1, this.graphics.dpr);
     this.canvas.width = Math.max(1, Math.floor(this.canvas.clientWidth * dpr));
     this.canvas.height = Math.max(1, Math.floor(this.canvas.clientHeight * dpr));
@@ -202,9 +291,55 @@ export class GameEngine {
     return { x: (x - (width - WORLD * scale) / 2) / scale, y: (y - (height - WORLD * scale) / 2) / scale };
   }
 
+  setPhase(phase) { this.phase = phase; }
+
+  toNetworkTime(localTime) {
+    return localTime > 0 ? Date.now() + (this.serverOffset || 0) + localTime - performance.now() : 0;
+  }
+
+  fromNetworkTime(serverTime) {
+    return serverTime > 0 ? performance.now() + serverTime - (Date.now() + (this.serverOffset || 0)) : 0;
+  }
+
+  // Animación de spawn de un jugador (la ven todos).
+  spawnPlayer(id) {
+    const player = this.players.get(id);
+    if (!player || this.spawned.has(id)) return;
+    this.spawned.add(id);
+    const now = performance.now();
+    player.respawnUntil = now + RESPAWN_BLINK;
+    player.outsideSince = 0;
+    const target = this.initialSpawnPositions.get(id) || { x: player.x, y: player.y };
+    this.effects.push({ type: 'spawn', x: target.x, y: target.y, color: player.color, until: now + SPAWN_DURATION });
+    if (id === this.meId) playSound('spawn', this.sound);
+  }
+
+  backstabRange() { return BACKSTAB_MAX_DISTANCE; }
+
+  // ¿Puede usar su habilidad ahora? (para el indicador y para bloquear)
+  abilityReady(player, now = performance.now()) {
+    if (now < player.abilityUntil) return { ready: false, reason: 'cooldown', remaining: player.abilityUntil - now };
+    if (player.ability === 'backstab') {
+      const enemy = this.nearestEnemy(player);
+      if (!enemy || distance(player, enemy) > this.backstabRange()) return { ready: false, reason: 'range', remaining: 0 };
+      const direction = normalize(enemy.x - player.x, enemy.y - player.y);
+      const destination = { x: enemy.x + direction.x * 52, y: enemy.y + direction.y * 52 };
+      const zone = getZone(this.elapsed, this.arenaSize);
+      if (Math.hypot(destination.x - CENTER, destination.y - CENTER) > zone.size - PLAYER_RADIUS) return { ready: false, reason: 'range', remaining: 0 };
+      return { ready: true, reason: '', remaining: 0 };
+    }
+    return { ready: true, reason: '', remaining: 0 };
+  }
+
+  nearestEnemy(player) {
+    return [...this.players.values()]
+      .filter((candidate) => candidate.id !== player.id && candidate.alive)
+      .sort((a, b) => distance(player, a) - distance(player, b))[0] || null;
+  }
+
   activateAbility() {
     const player = this.me;
-    if (!player || !player.alive) return;
+    if (!player || !player.alive || this.phase !== 'play' || this.tabHidden) return;
     const now = performance.now();
     if (now < player.abilityUntil) return;
     const rhythm = PASSIVES[player.passive]?.rhythm || 1;
@@ -223,11 +358,12 @@ export class GameEngine {
       playSound('shell', this.sound);
       player.abilityUntil = now + ability.cooldown * rhythm;
     } else if (player.ability === 'backstab') {
-      const enemy = [...this.players.values()].filter((candidate) => candidate.id !== this.meId && candidate.alive).sort((a, b) => distance(player, a) - distance(player, b))[0];
-      if (!enemy) return;
+      // Solo desde muy cerca: mismo orden que el alcance del bate con la pasiva Alcance.
+      const enemy = this.nearestEnemy(player);
+      if (!enemy || distance(player, enemy) > this.backstabRange()) return;
       const direction = normalize(enemy.x - player.x, enemy.y - player.y);
       const destination = { x: enemy.x + direction.x * 52, y: enemy.y + direction.y * 52 };
-      const zone = getZone(this.elapsed);
+      const zone = getZone(this.elapsed, this.arenaSize);
       if (Math.hypot(destination.x - CENTER, destination.y - CENTER) > zone.size - PLAYER_RADIUS) return;
       const origin = { x: player.x, y: player.y };
       player.x = destination.x;
@@ -255,25 +391,28 @@ export class GameEngine {
 
   swing() {
     const player = this.me;
-    if (!player?.alive) return;
+    if (!player?.alive || this.phase !== 'play' || this.tabHidden) return;
     const now = performance.now();
-    if (now < player.swingUntil) return;
+    // Cooldown del bate: propio y sin interacción con habilidades ni pasivas.
+    if (now < player.swingUntil || now < player.swingReadyAt) return;
     player.swingStarted = now;
     player.swingUntil = now + BAT_DURATION;
-    playSound('swing', this.sound);
+    player.swingReadyAt = now + BAT_COOLDOWN;
     player.swingHit = false;
+    playSound('swing', this.sound);
     player.aim = Math.atan2(this.mouseWorld.y - player.y, this.mouseWorld.x - player.x);
   }
 
   hitEnemy(attacker, target, now, automatic = false) {
     if (!target.alive || target.shieldUntil > now) return;
+    // Los golpes recibidos en una pestaña oculta no aplican knockback.
+    if (this.tabHidden) return;
     const dir = normalize(target.x - attacker.x, target.y - attacker.y);
     const power = KNOCKBACK * (PASSIVES[attacker.passive]?.impact || 1) * (attacker.shieldUntil > now ? 0.4 : 1);
     target.vx += dir.x * power;
     target.vy += dir.y * power;
     playSound('hit', this.sound);
     this.addBurst(target.x, target.y, dir.x, dir.y, '#f7c948', 10);
-    // En modo Vidas el golpe acumula daño; a los N impactos se pierde una vida.
     if (this.isLivesMode && target.id === this.meId) {
       target.hitsTaken = (target.hitsTaken || 0) + 1;
       if (target.hitsTaken >= LIVES_HITS_PER_LIFE) {
@@ -296,15 +435,14 @@ export class GameEngine {
       player.alive = false;
       this.onEliminate?.(player.id);
     } else if (cause === 'exit') {
-      // Reaparece cerca del centro tras perder una vida por expulsión.
       const angle = Math.random() * Math.PI * 2;
       player.x = CENTER + Math.cos(angle) * 120;
       player.y = CENTER + Math.sin(angle) * 120;
       player.vx = 0;
       player.vy = 0;
       player.outsideSince = 0;
-      player.respawnUntil = performance.now() + 900;
-      this.effects.push({ type: 'respawn', x: player.x, y: player.y, until: performance.now() + 900 });
+      player.respawnUntil = performance.now() + RESPAWN_BLINK;
+      this.effects.push({ type: 'respawn', x: player.x, y: player.y, until: performance.now() + RESPAWN_BLINK });
     }
   }
 
@@ -329,9 +467,9 @@ export class GameEngine {
     }
   }
 
-  // Separa pares de cajas solapadas repartiendo el empuje entre ambos (el Caparazón no es empujado).
   resolveCollisions() {
-    const players = [...this.players.values()].filter((player) => player.alive && performance.now() > player.respawnUntil);
+    const now = performance.now();
+    const players = [...this.players.values()].filter((player) => player.alive && now > player.respawnUntil);
     for (let i = 0; i < players.length; i += 1) {
       for (let j = i + 1; j < players.length; j += 1) {
         const a = players[i];
@@ -343,8 +481,8 @@ export class GameEngine {
         if (overlap <= 0) continue;
         const nx = dx / dist;
         const ny = dy / dist;
-        const aShielded = a.shieldUntil > performance.now();
-        const bShielded = b.shieldUntil > performance.now();
+        const aShielded = a.shieldUntil > now;
+        const bShielded = b.shieldUntil > now;
         const aMove = bShielded ? 0 : (aShielded ? 1 : 0.5);
         const bMove = aShielded ? 0 : (bShielded ? 1 : 0.5);
         a.x -= nx * overlap * aMove;
@@ -359,23 +497,22 @@ export class GameEngine {
   }
 
   update(dt, now) {
-    this.elapsed = (Date.now() - this.startedAt) / 1000;
+    if (this.phase === 'play') this.elapsed = Math.max(0, (this.clockNow() - this.startedAt) / 1000);
     const me = this.me;
-    const zone = getZone(this.elapsed);
+    const zone = getZone(this.elapsed, this.arenaSize);
 
-    // Avisos de zona: anuncio al empezar a encoger y tics mientras encoge.
-    if (this.elapsed >= ZONE_START) {
+    if (me?.alive && this.elapsed >= ZONE_START) {
       if (!this.zoneAnnounced) {
         this.zoneAnnounced = true;
         playSound('zone', this.sound);
       }
-      if (me?.alive && !insideZone(me, zone) && now - this.lastZoneTick > 2000) {
+      if (me.alive && (!insideZone(me, zone) || Math.hypot(me.x - CENTER, me.y - CENTER) > this.arenaSize) && now - this.lastZoneTick > 2000) {
         this.lastZoneTick = now;
         playSound('tick', this.sound);
       }
     }
 
-    // Espectador: aunque yo esté muerto, el mundo sigue vivo (remotos, efectos, zona).
+    // Espectador: el mundo sigue vivo aunque yo esté muerto.
     if (!me || !me.alive) {
       for (const player of this.players.values()) {
         if (player.id === this.meId) continue;
@@ -391,74 +528,69 @@ export class GameEngine {
       }
       this.updateEffects(performance.now(), dt);
       const alive = [...this.players.values()].filter((player) => player.alive);
-      if (alive.length === 1 && this.players.size > 1) {
-        if (!this.wonAnnounced) {
-          this.wonAnnounced = true;
-          if (alive[0].id === this.meId) playSound('win', this.sound);
-        }
-        this.onWin?.(alive[0].id);
+      if (alive.length <= 1 && this.initialPlayerCount > 1 && this.phase === 'play' && !this.wonAnnounced && this.elapsed >= 1) {
+        this.wonAnnounced = true;
+        if (alive[0]?.id === this.meId) playSound('win', this.sound);
+        this.onWin?.(alive[0]?.id || null);
       }
       this.onState?.(this.snapshot());
       return;
     }
-    if (!this.deadAnnounced && me.alive) this.deadAnnounced = false;
-
-    const direction = this.movementDirection(me);
-    const moving = this.keys.has('KeyW') || this.keys.has('KeyA') || this.keys.has('KeyS') || this.keys.has('KeyD') || this.keys.has('ArrowUp') || this.keys.has('ArrowDown') || this.keys.has('ArrowLeft') || this.keys.has('ArrowRight');
-    if (moving && performance.now() > me.respawnUntil) {
-      me.vx += direction.x * BASE_SPEED * 7 * dt;
-      me.vy += direction.y * BASE_SPEED * 7 * dt;
-    }
-    const damping = Math.exp(-DAMPING * dt);
-    me.vx *= damping;
-    me.vy *= damping;
-    me.x += me.vx * dt;
-    me.y += me.vy * dt;
-    me.aim = Math.atan2(this.mouseWorld.y - me.y, this.mouseWorld.x - me.x);
-
-    for (const player of this.players.values()) {
-      if (player.id === me.id || !player.alive) continue;
-      // Avance local de remotos para que los paquetes de 15 Hz no produzcan saltos.
-      player.x += player.vx * dt;
-      player.y += player.vy * dt;
-      player.vx *= damping;
-      player.vy *= damping;
-      if (player.targetX !== undefined) {
-        const blend = 1 - Math.exp(-16 * dt);
-        player.x += (player.targetX - player.x) * blend;
-        player.y += (player.targetY - player.y) * blend;
-      }
-      player.lastSeen = now;
-    }
-
-    this.resolveCollisions();
 
     const nowPerformance = performance.now();
-    this.updateEffects(nowPerformance, dt);
-    if (nowPerformance >= me.swingStarted + BAT_DURATION * 0.38 && !me.swingHit && nowPerformance < me.swingUntil + 30) {
-      me.swingHit = true;
-      const reach = BAT_RANGE * (PASSIVES[me.passive]?.range || 1);
-      for (const target of this.players.values()) {
-        if (target.id === me.id || !target.alive || distance(me, target) > reach) continue;
-        const targetAngle = Math.atan2(target.y - me.y, target.x - me.x);
-        if (Math.abs(angleDifference(targetAngle, me.aim)) <= Math.PI * 0.34) this.hitEnemy(me, target, nowPerformance);
-      }
-    }
 
-    const arenaDistance = Math.hypot(me.x - CENTER, me.y - CENTER);
-    // El borde exterior es una eliminación real: el bate puede empujar al rival fuera
-    // del círculo completo, en lugar de dejarlo pegado a un límite invisible.
-    if (arenaDistance > ARENA_EXIT_RADIUS) {
-      if (!me.outsideSince) me.outsideSince = now;
-      if (now - me.outsideSince > this.arenaExitGrace) {
-        if (this.isLivesMode) this.loseLife(me, 'exit');
-        else {
-          me.alive = false;
-          this.onEliminate?.(me.id);
+    if (this.phase === 'play') {
+      const direction = this.movementDirection(me);
+      const moving = this.keys.has('KeyW') || this.keys.has('KeyA') || this.keys.has('KeyS') || this.keys.has('KeyD') || this.keys.has('ArrowUp') || this.keys.has('ArrowDown') || this.keys.has('ArrowLeft') || this.keys.has('ArrowRight');
+      if (moving && nowPerformance > me.respawnUntil) {
+        me.vx += direction.x * BASE_SPEED * 7 * dt;
+        me.vy += direction.y * BASE_SPEED * 7 * dt;
+      }
+      const damping = Math.exp(-DAMPING * dt);
+      me.vx *= damping;
+      me.vy *= damping;
+      me.x += me.vx * dt;
+      me.y += me.vy * dt;
+      me.aim = Math.atan2(this.mouseWorld.y - me.y, this.mouseWorld.x - me.x);
+
+      for (const player of this.players.values()) {
+        if (player.id === me.id || !player.alive) continue;
+        player.x += player.vx * dt;
+        player.y += player.vy * dt;
+        player.vx *= damping;
+        player.vy *= damping;
+        if (player.targetX !== undefined) {
+          const blend = 1 - Math.exp(-16 * dt);
+          player.x += (player.targetX - player.x) * blend;
+          player.y += (player.targetY - player.y) * blend;
+        }
+        player.lastSeen = now;
+      }
+
+      this.resolveCollisions();
+
+      if (nowPerformance >= me.swingStarted + BAT_DURATION * 0.42 && !me.swingHit && nowPerformance < me.swingUntil + 30) {
+        me.swingHit = true;
+        const reach = BAT_RANGE * (PASSIVES[me.passive]?.range || 1);
+        for (const target of this.players.values()) {
+          if (target.id === me.id || !target.alive || distance(me, target) > reach) continue;
+          const targetAngle = Math.atan2(target.y - me.y, target.x - me.x);
+          if (Math.abs(angleDifference(targetAngle, me.aim)) <= BAT_HALF_ANGLE) this.hitEnemy(me, target, nowPerformance);
         }
       }
-    } else {
-      if (!insideZone(me, zone)) {
+
+      // Salida de arena precisa: tu centro cruza el borde (margen mínimo).
+      const arenaDistance = Math.hypot(me.x - CENTER, me.y - CENTER);
+      if (arenaDistance > this.arenaSize) {
+        if (!me.outsideSince) me.outsideSince = now;
+        if (now - me.outsideSince > 140) {
+          if (this.isLivesMode) this.loseLife(me, 'exit');
+          else {
+            me.alive = false;
+            this.onEliminate?.(me.id);
+          }
+        }
+      } else if (this.elapsed >= ZONE_START && !insideZone(me, zone)) {
         if (!me.outsideSince) me.outsideSince = now;
         if (now - me.outsideSince > 1000) {
           if (this.isLivesMode) this.loseLife(me, 'exit');
@@ -470,20 +602,32 @@ export class GameEngine {
       } else {
         me.outsideSince = 0;
       }
+    } else {
+      // En loadout/spawn/countdown los remotos se siguen viendo moverse suavemente.
+      for (const player of this.players.values()) {
+        if (player.id === me.id || !player.alive) continue;
+        if (player.targetX !== undefined) {
+          const blend = 1 - Math.exp(-10 * dt);
+          player.x += (player.targetX - player.x) * blend;
+          player.y += (player.targetY - player.y) * blend;
+        }
+      }
     }
 
     const alive = [...this.players.values()].filter((player) => player.alive);
-    if (alive.length === 1 && this.players.size > 1) {
-      if (!this.wonAnnounced) {
-        this.wonAnnounced = true;
-        if (alive[0].id === this.meId) playSound('win', this.sound);
-      }
-      this.onWin?.(alive[0].id);
+    if (alive.length <= 1 && this.initialPlayerCount > 1 && this.phase === 'play' && !this.wonAnnounced && this.elapsed >= 1) {
+      this.wonAnnounced = true;
+      if (alive[0]?.id === this.meId) playSound('win', this.sound);
+      this.onWin?.(alive[0]?.id || null);
     }
+    this.updateEffects(nowPerformance, dt);
     this.onState?.(this.snapshot());
   }
 
   applyStrike(strike) {
+    // Pestaña oculta: no te pueden golpear mientras tanto. Ignorar además un
+    // evento de red que se haya entregado con retraso al volver a la pestaña.
+    if (this.tabHidden || (this.hiddenSinceEpoch && Number(strike.createdAt) <= this.hiddenSinceEpoch)) return;
     const target = this.players.get(this.meId);
     if (!target || !target.alive || target.shieldUntil > performance.now()) return;
     target.vx += Number(strike.dx || 0) * Number(strike.power || 0);
@@ -499,16 +643,26 @@ export class GameEngine {
   }
 
   applyRemote(snapshot) {
+    const present = new Set(snapshot.map((data) => data.id));
+    for (const [id, player] of this.players) {
+      if (id !== this.meId && !present.has(id)) {
+        this.players.delete(id);
+        this.spawned.delete(id);
+      }
+    }
     for (const data of snapshot) {
       const player = this.players.get(data.id);
       if (!player || player.id === this.meId) continue;
       const networkState = {};
-      for (const key of ['x', 'y', 'vx', 'vy', 'aim', 'alive', 'lives', 'hitsTaken', 'swingUntil', 'shieldUntil', 'abilityUntil', 'color', 'name', 'passive', 'ability']) {
-        if (data[key] !== undefined && data[key] !== null) networkState[key] = data[key];
+      for (const key of ['x', 'y', 'vx', 'vy', 'aim', 'alive', 'lives', 'hitsTaken', 'swingUntil', 'swingReadyAt', 'shieldUntil', 'abilityUntil', 'color', 'name', 'passive', 'ability']) {
+        if (data[key] !== undefined && data[key] !== null) {
+          networkState[key] = ['swingUntil', 'swingReadyAt', 'shieldUntil', 'abilityUntil'].includes(key)
+            ? this.fromNetworkTime(Number(data[key]))
+            : data[key];
+        }
       }
-      if (data.x !== undefined && data.y !== undefined) {
-        const jump = Math.hypot(data.x - player.x, player.y !== undefined ? data.y - player.y : 0);
-        // Teletransporte/respawn se aplica de inmediato; el movimiento normal se interpola.
+      if (data.x !== undefined && data.x !== null && data.y !== undefined && data.y !== null) {
+        const jump = Math.hypot(data.x - player.x, data.y - player.y);
         if (jump > 180) {
           player.x = data.x;
           player.y = data.y;
@@ -520,12 +674,12 @@ export class GameEngine {
         delete networkState.y;
       }
       Object.assign(player, networkState, { remote: true });
-      if (data.swingStarted !== undefined) player.swingStarted = data.swingStarted;
+      if (data.swingStarted !== undefined) player.swingStarted = this.fromNetworkTime(Number(data.swingStarted));
     }
   }
 
   snapshot() {
-    return [...this.players.values()].map(({ id, x, y, vx, vy, aim, alive, lives, hitsTaken, swingUntil, swingStarted, shieldUntil, abilityUntil, color, name, passive, ability }) => ({ id, x, y, vx, vy, aim, alive, lives, hitsTaken, swingUntil, swingStarted, shieldUntil, abilityUntil, color, name, passive, ability }));
+    return [...this.players.values()].map(({ id, x, y, vx, vy, aim, alive, lives, hitsTaken, swingUntil, swingStarted, swingReadyAt, shieldUntil, abilityUntil, color, name, passive, ability }) => ({ id, x, y, vx, vy, aim, alive, lives, hitsTaken, swingUntil, swingStarted, swingReadyAt, shieldUntil, abilityUntil, color, name, passive, ability }));
   }
 
   start() {
@@ -536,7 +690,6 @@ export class GameEngine {
       const dt = Math.min((now - this.lastFrame) / 1000, 0.05);
       this.lastFrame = now;
       this.update(dt, Date.now());
-      // Mantiene la simulación a 60 Hz, pero limita el coste de pintura en Macs modestos.
       if (now - this.lastRender >= this.graphics.renderMs) {
         this.render();
         this.lastRender = now;
@@ -550,6 +703,8 @@ export class GameEngine {
     this.running = false;
     window.removeEventListener('keydown', this.keyDown);
     window.removeEventListener('keyup', this.keyUp);
+    window.removeEventListener('resize', this.resizeHandler);
+    document.removeEventListener('visibilitychange', this.visibilityChange);
     this.canvas.removeEventListener('mousemove', this.mouseMove);
     this.canvas.removeEventListener('mousedown', this.click);
   }
@@ -560,7 +715,6 @@ export class GameEngine {
     const height = this.canvas.clientHeight;
     const dpr = this.dpr || 1;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, width, height);
     ctx.fillStyle = '#111218';
     ctx.fillRect(0, 0, width, height);
     const scale = Math.min(width, height) / WORLD;
@@ -571,11 +725,10 @@ export class GameEngine {
     ctx.scale(scale, scale);
     ctx.fillStyle = '#232630';
     ctx.fillRect(0, 0, WORLD, WORLD);
-    // Pocas marcas estáticas: dan profundidad sin generar objetos ni gradientes por frame.
     ctx.fillStyle = 'rgba(255,255,255,.025)';
     for (let x = 40; x < WORLD; x += 80) ctx.fillRect(x, 0, 1, WORLD);
     for (let y = 40; y < WORLD; y += 80) ctx.fillRect(0, y, WORLD, 1);
-    const zone = getZone(this.elapsed);
+    const zone = getZone(this.elapsed, this.arenaSize);
     ctx.save();
     ctx.beginPath();
     ctx.arc(CENTER, CENTER, zone.size, 0, Math.PI * 2);
@@ -588,7 +741,6 @@ export class GameEngine {
     ctx.beginPath();
     ctx.arc(CENTER, CENTER, zone.size, 0, Math.PI * 2);
     ctx.stroke();
-    // Anillo pulsante de aviso mientras la zona se encoge.
     if (this.elapsed >= ZONE_START && this.elapsed < ZONE_START + ZONE_DURATION) {
       const pulse = 0.5 + 0.5 * Math.sin(this.elapsed * Math.PI * 2.4);
       ctx.globalAlpha = 0.16 + pulse * 0.24;
@@ -599,30 +751,50 @@ export class GameEngine {
       ctx.stroke();
       ctx.globalAlpha = 1;
     }
+    // Borde de la arena (crece con el número de jugadores).
     ctx.strokeStyle = '#576070';
     ctx.lineWidth = 4;
     ctx.beginPath();
-    ctx.arc(CENTER, CENTER, MAP_SIZE, 0, Math.PI * 2);
+    ctx.arc(CENTER, CENTER, this.arenaSize, 0, Math.PI * 2);
     ctx.stroke();
 
     this.drawEffects(ctx);
     for (const player of this.players.values()) this.drawPlayer(ctx, player);
     ctx.restore();
+
     this.drawHud(ctx, width, height);
-    // Viñeta roja si estoy fuera de la zona (aviso barato: gradiente radial precalculado por frame mínimo).
-    if (this.me?.alive && !insideZone(this.me, zone)) {
-      const gradient = ctx.createRadialGradient(width / 2, height / 2, Math.min(width, height) * 0.32, width / 2, height / 2, Math.max(width, height) * 0.72);
-      gradient.addColorStop(0, 'rgba(255,60,80,0)');
-      gradient.addColorStop(1, 'rgba(255,60,80,.34)');
-      ctx.fillStyle = gradient;
-      ctx.fillRect(0, 0, width, height);
-    }
+    this.drawEdgeWarning(ctx, width, height);
+    if (this.phase !== 'play') this.dimForPhase(ctx, width, height);
+  }
+
+  // Viñeta roja gradual por las esquinas al acercarte al borde (o al acercarse el borde a ti).
+  drawEdgeWarning(ctx, width, height) {
+    const me = this.me;
+    if (!me?.alive) return;
+    const dist = Math.hypot(me.x - CENTER, me.y - CENTER);
+    const warnBand = 150;
+    const zoneBoundary = this.elapsed >= ZONE_START ? getZone(this.elapsed, this.arenaSize).size : this.arenaSize;
+    const effectiveBoundary = Math.min(this.arenaSize, zoneBoundary);
+    const proximity = clamp((dist - (effectiveBoundary - warnBand)) / warnBand, 0, 1);
+    const outside = clamp((dist - effectiveBoundary) / 40, 0, 1);
+    const intensity = Math.max(proximity * 0.75, outside);
+    if (intensity <= 0.02) return;
+    const gradient = ctx.createRadialGradient(width / 2, height / 2, Math.min(width, height) * (0.42 - intensity * 0.14), width / 2, height / 2, Math.max(width, height) * 0.72);
+    gradient.addColorStop(0, 'rgba(255,60,80,0)');
+    gradient.addColorStop(1, `rgba(255,40,64,${(0.42 * intensity).toFixed(3)})`);
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, width, height);
+  }
+
+  dimForPhase(ctx, width, height) {
+    ctx.fillStyle = 'rgba(10, 10, 16, .45)';
+    ctx.fillRect(0, 0, width, height);
   }
 
   drawEffects(ctx) {
     const now = performance.now();
     for (const effect of this.effects) {
-      const life = clamp((effect.until - now) / 520, 0, 1);
+      const life = clamp((effect.until - now) / (effect.type === 'spawn' ? SPAWN_DURATION : 520), 0, 1);
       if (effect.type === 'particle') {
         ctx.globalAlpha = life;
         ctx.fillStyle = effect.color;
@@ -655,6 +827,19 @@ export class GameEngine {
         ctx.beginPath();
         ctx.arc(effect.x, effect.y, 20 + (1 - life) * 34, 0, Math.PI * 2);
         ctx.stroke();
+      } else if (effect.type === 'spawn') {
+        // Aro de spawn: se cierra desde el suelo con destellos del color del jugador.
+        ctx.globalAlpha = 0.9;
+        ctx.strokeStyle = effect.color;
+        ctx.lineWidth = 6;
+        ctx.beginPath();
+        ctx.arc(effect.x, effect.y, SPAWN_RING_RADIUS * (1 - life) + PLAYER_RADIUS, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.globalAlpha = 0.35 * life;
+        ctx.fillStyle = effect.color;
+        ctx.beginPath();
+        ctx.arc(effect.x, effect.y, SPAWN_RING_RADIUS * (1 - life) * 0.8, 0, Math.PI * 2);
+        ctx.fill();
       }
       ctx.globalAlpha = 1;
     }
@@ -665,12 +850,10 @@ export class GameEngine {
     const now = performance.now();
     ctx.save();
     ctx.translate(player.x, player.y);
-    // Parpadeo breve al reaparecer tras perder una vida.
     if (player.respawnUntil > now && Math.floor(now / 90) % 2 === 0) {
       ctx.restore();
       return;
     }
-    // Sombra simple y barata para separar personajes del suelo.
     ctx.fillStyle = 'rgba(0,0,0,.24)';
     ctx.beginPath();
     ctx.ellipse(2, 18, 20, 7, 0, 0, Math.PI * 2);
@@ -688,7 +871,6 @@ export class GameEngine {
     const swingProgress = swingActive ? clamp((now - player.swingStarted) / BAT_DURATION, 0, 1) : 0;
     const swingOffset = swingActive ? -BAT_SWING_ANGLE / 2 + Math.sin(swingProgress * Math.PI) * BAT_SWING_ANGLE : 0;
     const batLength = 78 * (PASSIVES[player.passive]?.range || 1);
-    // El bate permanece visible y apunta a la dirección del ratón; durante el golpe hace un arco.
     ctx.save();
     ctx.rotate(player.aim + swingOffset);
     ctx.lineCap = 'round';
@@ -705,16 +887,16 @@ export class GameEngine {
     ctx.lineTo(batLength, 0);
     ctx.stroke();
     ctx.restore();
-    if (swingActive) {
-      ctx.globalAlpha = 0.28 * (1 - swingProgress);
+    // El arco del bate SIEMPRE visible para los demás (120°): se ve el área de bateo.
+    if (player.id !== this.meId || swingActive) {
+      ctx.globalAlpha = swingActive ? 0.34 * (1 - swingProgress) : 0.09;
       ctx.strokeStyle = '#ffe28a';
-      ctx.lineWidth = 5;
+      ctx.lineWidth = swingActive ? 5 : 3;
       ctx.beginPath();
-      ctx.arc(0, 0, batLength * 0.72, player.aim - BAT_SWING_ANGLE / 2, player.aim + BAT_SWING_ANGLE / 2);
+      ctx.arc(0, 0, batLength * 0.82, player.aim - BAT_SWING_ANGLE / 2, player.aim + BAT_SWING_ANGLE / 2);
       ctx.stroke();
       ctx.globalAlpha = 1;
     }
-    // Aro de alcance propio: muestra tu rango real de bate (crece con la pasiva Alcance).
     if (player.id === this.meId) {
       ctx.globalAlpha = 0.14;
       ctx.strokeStyle = '#9da6ba';
@@ -733,7 +915,9 @@ export class GameEngine {
     ctx.roundRect(-PLAYER_SIZE / 2, -PLAYER_SIZE / 2, PLAYER_SIZE, PLAYER_SIZE, 8);
     ctx.fill();
     ctx.stroke();
-    const look = player.id === this.meId ? this.mouseWorld : { x: player.x + player.vx, y: player.y + player.vy };
+    const look = player.id === this.meId
+      ? this.mouseWorld
+      : { x: player.x + Math.cos(player.aim), y: player.y + Math.sin(player.aim) };
     const lookAngle = Math.atan2(look.y - player.y, look.x - player.x);
     const ex = Math.cos(lookAngle) * 2;
     const ey = Math.sin(lookAngle) * 2;
@@ -751,18 +935,84 @@ export class GameEngine {
     ctx.font = 'bold 14px system-ui';
     ctx.textAlign = 'center';
     ctx.fillText(player.name, 0, -29);
-    // En modo Vidas, vidas visibles sobre cada jugador.
     if (this.isLivesMode) {
       const lives = player.lives ?? START_LIVES;
       ctx.font = '11px system-ui';
       ctx.fillText('❤'.repeat(lives) || '💀', 0, -44);
     }
+    // Flecha de identidad: solo sobre tu cuby, botando arriba.
+    if (player.id === this.meId) {
+      const bob = Math.sin(now / 220) * 4;
+      ctx.save();
+      ctx.translate(0, -78 + bob);
+      ctx.fillStyle = '#ffd23f';
+      ctx.strokeStyle = 'rgba(23,21,31,.9)';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.moveTo(0, 12);
+      ctx.lineTo(-11, -6);
+      ctx.lineTo(-4.5, -6);
+      ctx.lineTo(-4.5, -16);
+      ctx.lineTo(4.5, -16);
+      ctx.lineTo(4.5, -6);
+      ctx.lineTo(11, -6);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+      this.drawAbilityIndicator(ctx, player, now);
+    }
     ctx.restore();
+  }
+
+  // Indicador de habilidad "con el reojo": anillo alrededor de tu cuby.
+  drawAbilityIndicator(ctx, player, now) {
+    const status = this.abilityReady(player, now);
+    const radius = 27;
+    if (status.ready) {
+      // Pulso dorado: la habilidad está lista (backstab solo si estás en rango).
+      const pulse = 0.5 + 0.5 * Math.sin(now / 260);
+      ctx.globalAlpha = 0.5 + pulse * 0.4;
+      ctx.strokeStyle = '#ffd23f';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(0, 0, radius + pulse * 2.5, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+      return;
+    }
+    if (status.reason === 'cooldown' && status.remaining > 0) {
+      const ability = ABILITIES[player.ability];
+      const total = ability.cooldown * (PASSIVES[player.passive]?.rhythm || 1);
+      const fraction = clamp(1 - status.remaining / total, 0, 1);
+      ctx.globalAlpha = 0.75;
+      ctx.strokeStyle = 'rgba(255,255,255,.2)';
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.arc(0, 0, radius, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.strokeStyle = '#63e6be';
+      ctx.beginPath();
+      ctx.arc(0, 0, radius, -Math.PI / 2, -Math.PI / 2 + fraction * Math.PI * 2);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    } else if (status.reason === 'range') {
+      // Backstab listo pero lejos: puntitos, aviso sutil de "acércate".
+      ctx.globalAlpha = 0.4 + 0.2 * Math.sin(now / 300);
+      ctx.strokeStyle = '#b68cff';
+      ctx.lineWidth = 2.5;
+      ctx.setLineDash([4, 7]);
+      ctx.beginPath();
+      ctx.arc(0, 0, radius, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 1;
+    }
   }
 
   drawHud(ctx, width, height) {
     const me = this.me;
-    const zone = getZone(this.elapsed);
+    const zone = getZone(this.elapsed, this.arenaSize);
     const zoneText = zone.suddenDeath
       ? 'MUERTE SÚBITA'
       : this.elapsed < ZONE_START
@@ -778,11 +1028,22 @@ export class GameEngine {
     ctx.fillStyle = zone.suddenDeath ? '#ff5c67' : '#b9c1d3';
     ctx.fillText(zoneText, 32, 70);
     if (me) {
+      const batRemaining = Math.max(0, (me.swingReadyAt || 0) - performance.now());
+      const ability = ABILITIES[me.ability];
+      const status = this.abilityReady(me);
       const remaining = Math.max(0, me.abilityUntil - performance.now());
-      const abilityText = remaining ? `${ABILITIES[me.ability].label}: ${(remaining / 1000).toFixed(1)}s` : `${ABILITIES[me.ability].label}: LISTA (Espacio)`;
-      ctx.fillStyle = remaining ? '#b9c1d3' : '#7df2b1';
+      const abilityText = status.ready
+        ? `${ability.label}: LISTA (Espacio)`
+        : status.reason === 'range'
+          ? `${ability.label}: ACÉRCATE`
+          : `${ability.label}: ${(remaining / 1000).toFixed(1)}s`;
+      ctx.fillStyle = status.ready ? '#7df2b1' : '#b9c1d3';
       ctx.fillText(abilityText, 32, 91);
-      // Vidas propias en el HUD (modo Vidas).
+      // Cooldown del bate, separado del de la habilidad.
+      if (batRemaining > 0) {
+        ctx.fillStyle = '#ffd23f';
+        ctx.fillText(`Bate: ${(batRemaining / 1000).toFixed(1)}s`, 232, 70);
+      }
       if (this.isLivesMode) {
         const lives = me.lives ?? START_LIVES;
         ctx.font = '18px system-ui';
@@ -798,8 +1059,7 @@ export class GameEngine {
       ctx.textAlign = 'center';
       ctx.fillText('ELIMINADO · viendo la partida', width / 2, height - 60);
     }
-    // Ping en la esquina superior derecha.
-    if (this.pingMs !== null && this.pingMs !== undefined) {
+    if (typeof this.pingMs === 'number') {
       ctx.font = '12px system-ui';
       ctx.textAlign = 'right';
       ctx.fillStyle = this.pingMs < 90 ? '#7df2b1' : this.pingMs < 200 ? '#ffe66d' : '#ff5c67';
