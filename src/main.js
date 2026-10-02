@@ -9,6 +9,8 @@ const MIN_BLACK_MS = 3000;   // el negro dura mínimo 3 s aunque todos carguen a
 const AFTER_LOAD_MS = 1000;  // cuando todos cargan, +1 s y a la vez
 const FINALE_DURATION_MS = 2600;
 const LOAD_PHRASES = ['Cargando recursos…', 'Ya casi estamos…', 'Inicializando la arena…', 'Afinando el bate…', 'Puliendo cubys…'];
+const COLOR_NAMES = new Map(COLORS.map((color, index) => [color, ['Coral', 'Naranja', 'Solar', 'Menta', 'Turquesa', 'Eléctrico', 'Violeta', 'Rosa'][index]]));
+const CEREMONY_COLORS = new Set(COLORS);
 
 const app = document.querySelector('#app');
 const settings = {
@@ -705,6 +707,7 @@ function startCeremony() {
   state.gateSentFor = '';
   state.gateShownFor = '';
   state.ceremonyRenderedTurn = null;
+  state.ceremonyControlsSignature = '';
   state.turnCommitInFlight = '';
   stopGame();
 
@@ -715,7 +718,7 @@ function startCeremony() {
     if (roomState.phase === 'playing' || roomState.phase === 'ended') return;
     renderCeremonyFrame(roomState);
   }));
-  state.ceremonyTimer = setInterval(tickCeremony, 200);
+  state.ceremonyTimer = setInterval(tickCeremony, 500);
 }
 
 function preloaderHtml(percent, phrase, indeterminate) {
@@ -830,7 +833,11 @@ function renderCeremonyTurn(roomState, players) {
       <button id="confirm-color" class="confirm-btn">Confirmar color</button>
     </div><div class="ceremony-stage"><div class="color-stage" id="color-stage">
       <div class="cuby-preview" id="cuby-preview"></div>
-      <div class="color-palette">${COLORS.map((color) => `<button class="color-swatch" data-color="${color}" style="--color:${color}" aria-label="Elegir color ${color}"></button>`).join('')}</div>
+      <div class="color-palette-wrap">
+        <div class="palette-heading"><div><span>PALETA DE COMBATE</span><strong id="selected-color-name"></strong></div><span class="palette-code" id="selected-color-code"></span></div>
+        <div class="color-palette">${COLORS.map((color, colorIndex) => `<button class="color-swatch" data-color="${color}" style="--color:${color}" aria-label="Elegir color ${COLOR_NAMES.get(color)}" title="${COLOR_NAMES.get(color)}"><span>${String(colorIndex + 1).padStart(2, '0')}</span></button>`).join('')}</div>
+        <div class="palette-footnote"><span>● Tu color, tu identidad</span><span>ESCALA LA ARENA</span></div>
+      </div>
     </div></div>`;
     const stage = ceremonyEl.querySelector('#color-stage');
     const previousId = state.previousCeremonyTurn;
@@ -850,14 +857,18 @@ function renderCeremonyTurn(roomState, players) {
         state.profile.color = button.dataset.color;
         localStorage.setItem('knockbit-color', state.pendingColor);
         writeOwnRoomState(`pendingColors/${state.id}`, state.pendingColor).catch(() => {});
-        updateCeremonyControls(roomState, players);
+        updateCeremonyControls(state.roomValue?.state || roomState, players);
       });
     });
     ceremonyEl.querySelector('#confirm-color').addEventListener('click', () => requestColorConfirm(state.pendingColor || chosen));
     drawCeremonyCuby(document.querySelector('#cuby-preview'), chosen, player.name, isMyTurn);
   } else {
     const record = cubyCanvases.get('cuby-preview');
-    if (record) record.color = chosen;
+    if (record && record.color !== chosen) {
+      record.color = chosen;
+      record.container?.style.setProperty('--preview-color', chosen);
+      record.draw?.();
+    }
   }
   updateCeremonyControls(roomState, players);
 }
@@ -871,7 +882,8 @@ function updateCeremonyControls(roomState, players) {
   const remaining = Math.max(0, Math.ceil((Number(roomState.turnEndsAt || 0) - serverNow()) / 1000));
   const timer = ceremonyEl.querySelector('#turn-timer');
   if (timer) {
-    timer.textContent = `${remaining}s`;
+    const timerText = `${remaining}s`;
+    if (timer.textContent !== timerText) timer.textContent = timerText;
     timer.classList.toggle('low', remaining <= 5);
   }
   if (turnId !== state.id) state.pendingColor = null;
@@ -879,20 +891,40 @@ function updateCeremonyControls(roomState, players) {
   const what = ceremonyEl.querySelector('#turn-what');
   if (who) who.textContent = `${turnId === state.id ? 'Elige tu color' : player.name} · ${index + 1}/${order.length}`;
   if (what) what.textContent = turnId === state.id ? 'Tu turno · elige y confirma' : `Turno de ${player.name}`;
+  const pending = roomState.pendingColors || {};
+  const playerColor = CEREMONY_COLORS.has(player.color) ? player.color : COLORS[0];
   const selected = turnId === state.id
-    ? (state.pendingColor || (Object.hasOwn(roomState.pendingColors || {}, turnId) ? roomState.pendingColors[turnId] : player.color))
-    : (Object.hasOwn(roomState.pendingColors || {}, turnId) ? roomState.pendingColors[turnId] : player.color);
-  ceremonyEl.querySelectorAll('.color-swatch').forEach((button) => {
-    const lockedBy = Object.entries(roomState.colorsLocked || {}).find(([, color]) => color === button.dataset.color)?.[0];
-    const unavailable = lockedBy && lockedBy !== turnId;
-    button.disabled = ! (turnId === state.id) || !!unavailable;
-    button.classList.toggle('taken', !!unavailable);
-    button.classList.toggle('selected', button.dataset.color === selected);
-  });
+    ? (CEREMONY_COLORS.has(state.pendingColor) ? state.pendingColor : (Object.hasOwn(pending, turnId) && CEREMONY_COLORS.has(pending[turnId]) ? pending[turnId] : playerColor))
+    : (Object.hasOwn(pending, turnId) && CEREMONY_COLORS.has(pending[turnId]) ? pending[turnId] : playerColor);
+  const lockedColors = roomState.colorsLocked || {};
+  const colorOwners = new Map(Object.entries(lockedColors).map(([id, color]) => [color, id]));
+  const signature = `${turnId}|${selected}|${[...colorOwners].map(([color, id]) => `${color}:${id}`).join('|')}`;
+  if (state.ceremonyControlsSignature !== signature) {
+    state.ceremonyControlsSignature = signature;
+    ceremonyEl.querySelectorAll('.color-swatch').forEach((button) => {
+      const lockedBy = colorOwners.get(button.dataset.color);
+      const unavailable = lockedBy && lockedBy !== turnId;
+      button.disabled = turnId !== state.id || !!unavailable;
+      button.classList.toggle('taken', !!unavailable);
+      button.classList.toggle('selected', button.dataset.color === selected);
+      button.setAttribute('aria-pressed', String(button.dataset.color === selected));
+      if (unavailable) button.title = `Color elegido por ${players.find((item) => item.id === lockedBy)?.name || 'otro jugador'}`;
+      else button.title = COLOR_NAMES.get(button.dataset.color) || button.dataset.color;
+    });
+    const selectedName = ceremonyEl.querySelector('#selected-color-name');
+    const selectedCode = ceremonyEl.querySelector('#selected-color-code');
+    ceremonyEl.querySelector('.color-palette-wrap')?.style.setProperty('--preview-color', selected);
+    if (selectedName) selectedName.textContent = COLOR_NAMES.get(selected) || 'Tu color';
+    if (selectedCode) selectedCode.textContent = selected;
+  }
   const confirm = ceremonyEl.querySelector('#confirm-color');
   if (confirm) confirm.disabled = turnId !== state.id;
   const record = cubyCanvases.get('cuby-preview');
-  if (record) record.color = selected;
+  if (record && record.color !== selected) {
+    record.color = selected;
+    record.container?.style.setProperty('--preview-color', selected);
+    record.draw?.();
+  }
 }
 
 async function requestColorConfirm(color) {
@@ -1034,17 +1066,24 @@ const cubyCanvases = new Map();
 function drawCeremonyCuby(container, color, name, interactive) {
   if (!container) return;
   const previous = cubyCanvases.get(container.id);
-  if (previous?.raf) cancelAnimationFrame(previous.raf);
+  if (previous) {
+    document.removeEventListener('visibilitychange', previous.onVisibilityChange);
+    previous.canvas?.removeEventListener('mousemove', previous.onMouseMove);
+  }
   container.innerHTML = `<canvas width="220" height="220"></canvas><div class="cuby-name">${esc(name)}</div>`;
   const canvasEl = container.querySelector('canvas');
   const ctx = canvasEl.getContext('2d');
-  const record = { color, name, mouse: { x: 110, y: 80 }, raf: 0 };
+  const record = { color, name, mouse: { x: 110, y: 80 }, canvas: canvasEl, container, draw: null };
   cubyCanvases.set(container.id, record);
-  if (interactive) canvasEl.addEventListener('mousemove', (event) => {
-    const rect = canvasEl.getBoundingClientRect();
-    record.mouse = { x: (event.clientX - rect.left) * 220 / rect.width, y: (event.clientY - rect.top) * 220 / rect.height };
-  });
-  const renderCuby = (time) => {
+  if (interactive) {
+    record.onMouseMove = (event) => {
+      const rect = canvasEl.getBoundingClientRect();
+      record.mouse = { x: (event.clientX - rect.left) * 220 / rect.width, y: (event.clientY - rect.top) * 220 / rect.height };
+      record.draw();
+    };
+    canvasEl.addEventListener('mousemove', record.onMouseMove, { passive: true });
+  }
+  const renderCuby = () => {
     const size = 96, cx = 110, cy = 108;
     ctx.clearRect(0, 0, 220, 220);
     ctx.fillStyle = 'rgba(0,0,0,.4)';
@@ -1053,7 +1092,6 @@ function drawCeremonyCuby(container, color, name, interactive) {
     ctx.fill();
     ctx.save();
     ctx.translate(cx, cy);
-    ctx.rotate(Math.sin(time / 420) * 0.045);
     ctx.fillStyle = record.color;
     ctx.strokeStyle = 'rgba(239,231,214,.95)';
     ctx.lineWidth = 5;
@@ -1070,9 +1108,10 @@ function drawCeremonyCuby(container, color, name, interactive) {
       ctx.beginPath(); ctx.arc(eyeX + ex * .6, -8 + ey * .6, 5.5, 0, Math.PI * 2); ctx.fill();
     }
     ctx.restore();
-    record.raf = requestAnimationFrame(renderCuby);
   };
-  record.raf = requestAnimationFrame(renderCuby);
+  record.draw = renderCuby;
+  container.style.setProperty('--preview-color', color);
+  renderCuby();
 }
 
 function stopCeremony() {
@@ -1080,9 +1119,13 @@ function stopCeremony() {
   state.ceremonyUnsubs.splice(0).forEach((unsubscribe) => unsubscribe?.());
   clearInterval(state.ceremonyTimer);
   state.ceremonyTimer = null;
-  for (const record of cubyCanvases.values()) cancelAnimationFrame(record.raf);
+  for (const record of cubyCanvases.values()) {
+    record.canvas?.removeEventListener('mousemove', record.onMouseMove);
+    record.draw = null;
+  }
   cubyCanvases.clear();
   state.ceremonyRenderedTurn = null;
+  state.ceremonyControlsSignature = '';
   state.gateSentFor = '';
   state.gateShownFor = '';
   state.gatePhase = '';
@@ -1316,6 +1359,7 @@ function syncState(snapshot) {
     swingReadyAt: state.engine.toNetworkTime(me.swingReadyAt),
     shieldUntil: state.engine.toNetworkTime(me.shieldUntil),
     abilityUntil: state.engine.toNetworkTime(me.abilityUntil),
+    teleportAt: me.teleportAt || 0,
     updatedAt: serverTimestamp(),
   }).catch(() => {});
 }

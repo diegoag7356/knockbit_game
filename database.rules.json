@@ -35,6 +35,7 @@
             "swingReadyAt": { ".validate": "newData.isNumber() || newData.val() == null" },
             "shieldUntil": { ".validate": "newData.isNumber() || newData.val() == null" },
             "abilityUntil": { ".validate": "newData.isNumber() || newData.val() == null" },
+            "teleportAt": { ".validate": "newData.isNumber() || newData.val() == null" },
             "$other": { ".validate": false }
           }
         },

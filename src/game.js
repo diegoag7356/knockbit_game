@@ -59,7 +59,8 @@ const SPAWN_DURATION = 800;
 const RESPAWN_BLINK = 900;
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
-const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+const distanceSquared = (a, b) => (a.x - b.x) ** 2 + (a.y - b.y) ** 2;
+const distance = (a, b) => Math.sqrt(distanceSquared(a, b));
 const normalize = (x, y) => {
   const length = Math.hypot(x, y) || 1;
   return { x: x / length, y: y / length };
@@ -120,7 +121,8 @@ export function makePlayer(data, index = 0, total = 1, arenaSize = BASE_MAP_SIZE
     y: CENTER + Math.sin(angle) * spawnDistance,
     vx: 0,
     vy: 0,
-    aim: -Math.PI / 2,
+    aim: Number.isFinite(data.aim) ? data.aim : -Math.PI / 2,
+    aimKnown: Number.isFinite(data.aim),
     alive: true,
     lives: data.lives !== undefined ? data.lives : START_LIVES,
     hitsTaken: data.hitsTaken || 0,
@@ -131,6 +133,7 @@ export function makePlayer(data, index = 0, total = 1, arenaSize = BASE_MAP_SIZE
     swingHit: false,
     shieldUntil: 0,
     abilityUntil: 0,
+    teleportAt: Number(data.teleportAt) || 0,
     outsideSince: 0,
     lastSeen: Date.now(),
     remote: false,
@@ -320,25 +323,60 @@ export class GameEngine {
 
   backstabRange() { return BACKSTAB_MAX_DISTANCE; }
 
+  // Posición detrás según hacia dónde mira el rival, limitada al área segura.
+  backstabDestination(player, enemy) {
+    const zone = getZone(this.elapsed, this.arenaSize);
+    const maxRadius = zone.size - PLAYER_RADIUS;
+    if (maxRadius < PLAYER_RADIUS * 2) return null;
+    // Si aún no llegó el aim remoto, interpreta que el rival te está mirando y
+    // aparece en el lado opuesto al atacante. Así no depende del aim por defecto.
+    const facing = enemy.aimKnown
+      ? { x: Math.cos(enemy.aim), y: Math.sin(enemy.aim) }
+      : normalize(player.x - enemy.x, player.y - enemy.y);
+    let x = enemy.x - facing.x * BACKSTAB_BEHIND;
+    let y = enemy.y - facing.y * BACKSTAB_BEHIND;
+    if (Math.hypot(x - CENTER, y - CENTER) > maxRadius) {
+      // Si la espalda está fuera de la zona, usa el lado interior y conserva
+      // separación suficiente para que la colisión no deshaga el teletransporte.
+      const towardCenter = normalize(CENTER - enemy.x, CENTER - enemy.y);
+      x = enemy.x + towardCenter.x * BACKSTAB_BEHIND;
+      y = enemy.y + towardCenter.y * BACKSTAB_BEHIND;
+      const fromCenter = Math.hypot(x - CENTER, y - CENTER);
+      if (fromCenter > maxRadius) {
+        const scale = maxRadius / (fromCenter || 1);
+        x = CENTER + (x - CENTER) * scale;
+        y = CENTER + (y - CENTER) * scale;
+      }
+    }
+    if (Math.hypot(x - enemy.x, y - enemy.y) < PLAYER_RADIUS * 1.7) return null;
+    return { x, y };
+  }
+
   // ¿Puede usar su habilidad ahora? (para el indicador y para bloquear)
   abilityReady(player, now = performance.now()) {
     if (now < player.abilityUntil) return { ready: false, reason: 'cooldown', remaining: player.abilityUntil - now };
     if (player.ability === 'backstab') {
       const enemy = this.nearestEnemy(player);
-      if (!enemy || distance(player, enemy) > this.backstabRange()) return { ready: false, reason: 'range', remaining: 0 };
-      const direction = normalize(enemy.x - player.x, enemy.y - player.y);
-      const destination = { x: enemy.x - direction.x * BACKSTAB_BEHIND, y: enemy.y - direction.y * BACKSTAB_BEHIND };
-      const zone = getZone(this.elapsed, this.arenaSize);
-      if (Math.hypot(destination.x - CENTER, destination.y - CENTER) > zone.size - PLAYER_RADIUS) return { ready: false, reason: 'range', remaining: 0 };
+      if (!enemy || distanceSquared(player, enemy) > this.backstabRange() ** 2 || !this.backstabDestination(player, enemy)) {
+        return { ready: false, reason: 'range', remaining: 0 };
+      }
       return { ready: true, reason: '', remaining: 0 };
     }
     return { ready: true, reason: '', remaining: 0 };
   }
 
   nearestEnemy(player) {
-    return [...this.players.values()]
-      .filter((candidate) => candidate.id !== player.id && candidate.alive)
-      .sort((a, b) => distance(player, a) - distance(player, b))[0] || null;
+    let nearest = null;
+    let nearestDistance = Infinity;
+    for (const candidate of this.players.values()) {
+      if (candidate.id === player.id || !candidate.alive) continue;
+      const candidateDistance = distanceSquared(player, candidate);
+      if (candidateDistance < nearestDistance) {
+        nearest = candidate;
+        nearestDistance = candidateDistance;
+      }
+    }
+    return nearest;
   }
 
   activateAbility() {
@@ -362,30 +400,34 @@ export class GameEngine {
       playSound('shell', this.sound);
       player.abilityUntil = now + ability.cooldown * rhythm;
     } else if (player.ability === 'backstab') {
-      // Teletransporte a la espalda del enemigo y golpe en la dirección en la que
-      // ya mirabas antes de saltar. Daño de bate normal, pero sin empuje.
+      // Teletransporte detrás del rival, mirando hacia él, y golpe automático sin empuje.
       const enemy = this.nearestEnemy(player);
-      if (!enemy || distance(player, enemy) > this.backstabRange()) return;
-      const direction = normalize(enemy.x - player.x, enemy.y - player.y);
-      // "Detrás" es el lado contrario al enemigo respecto a nosotros.
-      const destination = { x: enemy.x - direction.x * BACKSTAB_BEHIND, y: enemy.y - direction.y * BACKSTAB_BEHIND };
-      const zone = getZone(this.elapsed, this.arenaSize);
-      if (Math.hypot(destination.x - CENTER, destination.y - CENTER) > zone.size - PLAYER_RADIUS) return;
+      if (!enemy || distanceSquared(player, enemy) > this.backstabRange() ** 2) return;
+      const destination = this.backstabDestination(player, enemy);
+      if (!destination) return;
       const origin = { x: player.x, y: player.y };
-      const aimBefore = player.aim;
+      const strikeDirection = normalize(enemy.x - destination.x, enemy.y - destination.y);
       player.x = destination.x;
       player.y = destination.y;
-      player.aim = aimBefore;
+      player.vx = 0;
+      player.vy = 0;
+      player.targetX = undefined;
+      player.targetY = undefined;
+      player.teleportAt = Math.max(Date.now() + (this.serverOffset || 0), player.teleportAt + 1);
+      player.aim = Math.atan2(strikeDirection.y, strikeDirection.x);
       playSound('teleport', this.sound);
-      this.addBurst(origin.x, origin.y, direction.x, direction.y, '#b68cff', 12);
-      this.addBurst(player.x, player.y, direction.x, direction.y, '#ff7bd5', 24);
+      this.addBurst(origin.x, origin.y, strikeDirection.x, strikeDirection.y, '#b68cff', 12);
+      this.addBurst(player.x, player.y, strikeDirection.x, strikeDirection.y, '#ff7bd5', 24);
       this.effects.push({ type: 'teleport', x: player.x, y: player.y, fromX: origin.x, fromY: origin.y, until: now + 520 });
       player.abilityUntil = now + ability.cooldown * rhythm;
       this.hitEnemy(player, enemy, now, {
         automatic: true,
         knockback: false,
-        direction: { x: Math.cos(aimBefore), y: Math.sin(aimBefore) },
+        direction: strikeDirection,
       });
+      player.swingUntil = now + BAT_DURATION;
+      player.swingStarted = now;
+      player.swingHit = true;
     }
   }
 
@@ -570,6 +612,7 @@ export class GameEngine {
       me.x += me.vx * dt;
       me.y += me.vy * dt;
       me.aim = Math.atan2(this.mouseWorld.y - me.y, this.mouseWorld.x - me.x);
+      me.aimKnown = true;
 
       for (const player of this.players.values()) {
         if (player.id === me.id || !player.alive) continue;
@@ -672,18 +715,29 @@ export class GameEngine {
       const player = this.players.get(data.id);
       if (!player || player.id === this.meId) continue;
       const networkState = {};
-      for (const key of ['x', 'y', 'vx', 'vy', 'aim', 'alive', 'lives', 'hitsTaken', 'swingUntil', 'swingReadyAt', 'shieldUntil', 'abilityUntil', 'color', 'name', 'passive', 'ability']) {
+      for (const key of ['x', 'y', 'vx', 'vy', 'aim', 'alive', 'lives', 'hitsTaken', 'swingUntil', 'swingReadyAt', 'shieldUntil', 'abilityUntil', 'teleportAt', 'color', 'name', 'passive', 'ability']) {
         if (data[key] !== undefined && data[key] !== null) {
           networkState[key] = ['swingUntil', 'swingReadyAt', 'shieldUntil', 'abilityUntil'].includes(key)
             ? this.fromNetworkTime(Number(data[key]))
             : data[key];
         }
       }
+      if (data.aim !== undefined && data.aim !== null && Number.isFinite(Number(data.aim))) networkState.aimKnown = true;
       if (data.x !== undefined && data.x !== null && data.y !== undefined && data.y !== null) {
         const jump = Math.hypot(data.x - player.x, data.y - player.y);
-        if (jump > 180) {
+        const teleported = Number(data.teleportAt) > 0 && Number(data.teleportAt) !== player.teleportAt;
+        if (teleported || jump > 180) {
+          const fromX = player.x;
+          const fromY = player.y;
           player.x = data.x;
           player.y = data.y;
+          player.targetX = data.x;
+          player.targetY = data.y;
+          if (teleported) {
+            this.addBurst(fromX, fromY, 0, -1, '#b68cff', 10);
+            this.addBurst(data.x, data.y, 0, -1, '#ff7bd5', 16);
+            this.effects.push({ type: 'teleport', x: data.x, y: data.y, fromX, fromY, until: performance.now() + 520 });
+          }
         } else {
           player.targetX = data.x;
           player.targetY = data.y;
@@ -697,7 +751,7 @@ export class GameEngine {
   }
 
   snapshot() {
-    return [...this.players.values()].map(({ id, x, y, vx, vy, aim, alive, lives, hitsTaken, swingUntil, swingStarted, swingReadyAt, shieldUntil, abilityUntil, color, name, passive, ability }) => ({ id, x, y, vx, vy, aim, alive, lives, hitsTaken, swingUntil, swingStarted, swingReadyAt, shieldUntil, abilityUntil, color, name, passive, ability }));
+    return [...this.players.values()].map(({ id, x, y, vx, vy, aim, alive, lives, hitsTaken, swingUntil, swingStarted, swingReadyAt, shieldUntil, abilityUntil, teleportAt, color, name, passive, ability }) => ({ id, x, y, vx, vy, aim, alive, lives, hitsTaken, swingUntil, swingStarted, swingReadyAt, shieldUntil, abilityUntil, teleportAt, color, name, passive, ability }));
   }
 
   start() {
