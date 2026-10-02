@@ -118,7 +118,51 @@ button { cursor: pointer; border: 0; background: none; }
 .tape.tr { top: -12px; right: 34px; transform: rotate(6deg); }
 
 /* ---------- Marca ---------- */
-.hero-card { width: min(600px, 100%); padding: 44px 46px 40px; }
+/* ---------- Menú principal: escenario a pantalla completa ---------- */
+.hero-stage {
+  position: relative;
+  width: min(1180px, 100%);
+  min-height: min(620px, 76vh);
+  display: grid;
+  place-items: center;
+}
+/* Cubys de fondo: rebotan rápido y no tapan la tarjeta */
+.menu-cubys { position: absolute; inset: -8% -5%; pointer-events: none; }
+.menu-cubys .cuby {
+  position: absolute;
+  left: var(--x); top: var(--y);
+  width: var(--size); height: var(--size);
+  background: var(--cuby-color);
+  border: 3px solid var(--ink);
+  border-radius: 24% 20% 26% 22%;
+  box-shadow: 4px 4px 0 rgba(23, 21, 31, .85);
+  animation: menu-bounce .68s cubic-bezier(.32, -.38, .52, 1.38) infinite;
+  animation-delay: var(--delay);
+}
+.menu-cubys .cuby::after {
+  content: '';
+  position: absolute; left: 50%; top: 46%;
+  width: 46%; height: 30%;
+  transform: translateX(-50%);
+  background:
+    radial-gradient(circle at 27% 50%, var(--ink) 31%, transparent 32%),
+    radial-gradient(circle at 73% 50%, var(--ink) 31%, transparent 32%);
+}
+@keyframes menu-bounce {
+  0%, 100% { transform: translateY(0) scale(1, 1) rotate(var(--tilt)); }
+  38% { transform: translateY(var(--jump)) scale(.93, 1.09) rotate(calc(var(--tilt) * -1)); }
+  58% { transform: translateY(0) scale(1.07, .92) rotate(calc(var(--tilt) * .4)); }
+}
+
+.hero-card {
+  width: min(720px, 100%); padding: 48px 54px 44px;
+  z-index: 1;
+  animation: hero-float 5s ease-in-out infinite;
+}
+@keyframes hero-float {
+  0%, 100% { transform: translateY(0) rotate(-.25deg); }
+  50% { transform: translateY(-9px) rotate(.25deg); }
+}
 .menu-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 
 .brand {

@@ -153,10 +153,23 @@ function inviteUrl(code) {
 
 /* ================= MENÚ (capa 1: nombre + JUGAR) ================= */
 
+// Puestos de los cubys decorativos del menú: lejos del centro para no tapar la tarjeta.
+const MENU_CUBYS = [
+  [4, 12, 46], [13, 68, 34], [22, 26, 28], [31, 82, 40],
+  [70, 10, 38], [79, 40, 30], [88, 74, 44], [66, 62, 26],
+  [46, 6, 24], [92, 18, 26], [6, 44, 24], [58, 88, 32],
+];
+
 function renderMenu() {
   finishBoot();
   showSection('home');
-  menu.innerHTML = `<div class="card hero-card">
+  const confetti = MENU_CUBYS.map((spot, index) => {
+    const color = COLORS[index % COLORS.length];
+    return `<span class="cuby" style="--x:${spot[0]}%;--y:${spot[1]}%;--size:${spot[2]}px;--jump:-${14 + (index % 4) * 7}px;--delay:${(index % 6) * 0.11}s;--tilt:${index % 2 ? 5 : -5}deg;--cuby-color:${color}"></span>`;
+  }).join('');
+  menu.innerHTML = `<div class="hero-stage">
+    <div class="menu-cubys" aria-hidden="true">${confetti}</div>
+    <div class="card hero-card">
     <span class="tape tr" aria-hidden="true"></span>
     <div class="menu-heading">
       <div class="brand"><span class="brand-k" aria-hidden="true"><span class="eye"><i></i><i></i></span></span><span class="word">KNOCK<span class="accent">BIT</span></span></div>
@@ -172,6 +185,7 @@ function renderMenu() {
     <label class="field-label" for="name">Tu nombre</label>
     <input id="name" class="text-input name-input" maxlength="16" value="${esc(state.profile.name)}" placeholder="Escribe tu nombre" autocomplete="off">
     <button id="play" class="play-cta">JUGAR</button>
+    </div>
   </div>`;
   menu.querySelector('#settings-toggle').addEventListener('click', () => {
     const panel = menu.querySelector('#settings-panel');
@@ -569,9 +583,13 @@ function renderLobby() {
     <button id="leave" class="ghost leave-btn">Salir de la sala</button>
   </div>`;
   lobby.querySelector('#copy').addEventListener('click', async () => {
-    const text = `${inviteUrl(state.room)}  (código: ${state.room})`;
-    await navigator.clipboard?.writeText(text).catch(() => {});
-    toastMessage('Invitación copiada: enlace + código.');
+    const link = inviteUrl(state.room);
+    try {
+      await navigator.clipboard.writeText(link);
+      toastMessage('Enlace de la sala copiado.');
+    } catch {
+      toastMessage(`Copia este enlace: ${link}`);
+    }
   });
   lobby.querySelector('#ready').addEventListener('click', () => updateMyProfile({ ready: !mine.ready }));
   lobby.querySelector('#start')?.addEventListener('click', () => {
@@ -774,6 +792,7 @@ function renderCeremonyFrame(roomState) {
   }
 
   preloader.classList.add('hidden');
+  ceremonyEl.classList.remove('hidden');
   if (roomState.phase === 'color-turns') {
     renderCeremonyTurn(roomState, players);
   } else if (roomState.phase === 'color-finale') {

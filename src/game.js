@@ -26,22 +26,26 @@ const BASE_SPEED = 260;
 const DAMPING = 7;
 // El bate no se puede spamear: cooldown PROPIO, independiente de la habilidad
 // y de la pasiva Ritmo (que solo reduce habilidades accionables).
-const BAT_COOLDOWN = 650;
-// Un bateo "de verdad": el swing tarda algo más en completarse.
-const BAT_DURATION = 320;
+const BAT_COOLDOWN = 560;
+// Bateo seco: el arco se completa rápido y el impacto llega casi al empezar.
+const BAT_DURATION = 190;
+// Momento del impacto dentro del arco (fracción de BAT_DURATION): sin espera.
+const BAT_HIT_POINT = 0.12;
 const BAT_RANGE = 78;
 // Área de bateo: 120° centrados donde miras (60° por lado).
 const BAT_HALF_ANGLE = Math.PI / 3;
 const BAT_SWING_ANGLE = (Math.PI * 2) / 3;
-// Backstab: solo con el enemigo realmente cerca (~el alcance del bate con Alcance).
-const BACKSTAB_MAX_DISTANCE = BAT_RANGE * 1.35;
+// Backstab: teletransporte a la espalda del enemigo y golpe sin empuje.
+const BACKSTAB_MAX_DISTANCE = BAT_RANGE * 2.3;
+// Distancia a la que apareces respecto al enemigo: justo detrás de él.
+const BACKSTAB_BEHIND = 46;
 const MAX_PARTICLES = 72;
 export const GRAPHICS_PROFILES = {
   optimized: { label: 'Optimizado', dpr: 1.25, renderMs: 1000 / 55, maxParticles: 72 },
   normal: { label: 'Normal', dpr: 1.5, renderMs: 1000 / 60, maxParticles: 110 },
   high: { label: 'Alto', dpr: 2, renderMs: 1000 / 60, maxParticles: 160 },
 };
-const KNOCKBACK = 620;
+const KNOCKBACK = 700;
 // Salida de arena precisa: basta con que tu centro cruce el borde (con un
 // susurro de margen para absorbir latencia, mucho menor que antes).
 const ZONE_START = 30;
@@ -323,7 +327,7 @@ export class GameEngine {
       const enemy = this.nearestEnemy(player);
       if (!enemy || distance(player, enemy) > this.backstabRange()) return { ready: false, reason: 'range', remaining: 0 };
       const direction = normalize(enemy.x - player.x, enemy.y - player.y);
-      const destination = { x: enemy.x + direction.x * 52, y: enemy.y + direction.y * 52 };
+      const destination = { x: enemy.x - direction.x * BACKSTAB_BEHIND, y: enemy.y - direction.y * BACKSTAB_BEHIND };
       const zone = getZone(this.elapsed, this.arenaSize);
       if (Math.hypot(destination.x - CENTER, destination.y - CENTER) > zone.size - PLAYER_RADIUS) return { ready: false, reason: 'range', remaining: 0 };
       return { ready: true, reason: '', remaining: 0 };
@@ -358,23 +362,30 @@ export class GameEngine {
       playSound('shell', this.sound);
       player.abilityUntil = now + ability.cooldown * rhythm;
     } else if (player.ability === 'backstab') {
-      // Solo desde muy cerca: mismo orden que el alcance del bate con la pasiva Alcance.
+      // Teletransporte a la espalda del enemigo y golpe en la dirección en la que
+      // ya mirabas antes de saltar. Daño de bate normal, pero sin empuje.
       const enemy = this.nearestEnemy(player);
       if (!enemy || distance(player, enemy) > this.backstabRange()) return;
       const direction = normalize(enemy.x - player.x, enemy.y - player.y);
-      const destination = { x: enemy.x + direction.x * 52, y: enemy.y + direction.y * 52 };
+      // "Detrás" es el lado contrario al enemigo respecto a nosotros.
+      const destination = { x: enemy.x - direction.x * BACKSTAB_BEHIND, y: enemy.y - direction.y * BACKSTAB_BEHIND };
       const zone = getZone(this.elapsed, this.arenaSize);
       if (Math.hypot(destination.x - CENTER, destination.y - CENTER) > zone.size - PLAYER_RADIUS) return;
       const origin = { x: player.x, y: player.y };
+      const aimBefore = player.aim;
       player.x = destination.x;
       player.y = destination.y;
-      player.aim = Math.atan2(enemy.y - player.y, enemy.x - player.x);
+      player.aim = aimBefore;
       playSound('teleport', this.sound);
       this.addBurst(origin.x, origin.y, direction.x, direction.y, '#b68cff', 12);
-      this.addBurst(player.x, player.y, -direction.x, -direction.y, '#ff7bd5', 24);
+      this.addBurst(player.x, player.y, direction.x, direction.y, '#ff7bd5', 24);
       this.effects.push({ type: 'teleport', x: player.x, y: player.y, fromX: origin.x, fromY: origin.y, until: now + 520 });
       player.abilityUntil = now + ability.cooldown * rhythm;
-      this.hitEnemy(player, enemy, now, true);
+      this.hitEnemy(player, enemy, now, {
+        automatic: true,
+        knockback: false,
+        direction: { x: Math.cos(aimBefore), y: Math.sin(aimBefore) },
+      });
     }
   }
 
@@ -403,14 +414,21 @@ export class GameEngine {
     player.aim = Math.atan2(this.mouseWorld.y - player.y, this.mouseWorld.x - player.x);
   }
 
-  hitEnemy(attacker, target, now, automatic = false) {
+  // options: { automatic, knockback, direction } — `direction` fuerza la dirección
+  // del golpe (backstab) y `knockback: false` lo deja sin empuje.
+  hitEnemy(attacker, target, now, options = {}) {
+    const { automatic = false, knockback = true, direction: forced = null } = options || {};
     if (!target.alive || target.shieldUntil > now) return;
     // Los golpes recibidos en una pestaña oculta no aplican knockback.
     if (this.tabHidden) return;
-    const dir = normalize(target.x - attacker.x, target.y - attacker.y);
-    const power = KNOCKBACK * (PASSIVES[attacker.passive]?.impact || 1) * (attacker.shieldUntil > now ? 0.4 : 1);
-    target.vx += dir.x * power;
-    target.vy += dir.y * power;
+    const dir = forced || normalize(target.x - attacker.x, target.y - attacker.y);
+    const power = knockback
+      ? KNOCKBACK * (PASSIVES[attacker.passive]?.impact || 1) * (attacker.shieldUntil > now ? 0.4 : 1)
+      : 0;
+    if (power > 0) {
+      target.vx += dir.x * power;
+      target.vy += dir.y * power;
+    }
     playSound('hit', this.sound);
     this.addBurst(target.x, target.y, dir.x, dir.y, '#f7c948', 10);
     if (this.isLivesMode && target.id === this.meId) {
@@ -569,7 +587,7 @@ export class GameEngine {
 
       this.resolveCollisions();
 
-      if (nowPerformance >= me.swingStarted + BAT_DURATION * 0.42 && !me.swingHit && nowPerformance < me.swingUntil + 30) {
+      if (nowPerformance >= me.swingStarted + BAT_DURATION * BAT_HIT_POINT && !me.swingHit && nowPerformance < me.swingUntil + 30) {
         me.swingHit = true;
         const reach = BAT_RANGE * (PASSIVES[me.passive]?.range || 1);
         for (const target of this.players.values()) {
